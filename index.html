@@ -245,6 +245,7 @@
     <span id="footNote">▶ escucha el fragmento · clic en «Speaker N» para asignarle nombre.</span>
     <div class="spacer"></div>
     <span id="copyMsg">Copiado al portapapeles</span>
+    <button id="btnPause" style="display:none">Pausar</button>
     <button class="danger" id="btnStop">Detener</button>
   </footer>
 </div>
@@ -492,7 +493,9 @@
         audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false }
       });
       streams.push(disp);
-      disp.getVideoTracks().forEach(t => t.stop()); // solo se necesita el audio
+      // Importante: NO detener la pista de video. Al compartir pantalla completa
+      // (Windows), detenerla finaliza toda la captura, incluido el audio.
+      // El video no se envía a ningún lado; solo se mantiene activo.
       const a = disp.getAudioTracks();
       if (!a.length){
         disp.getTracks().forEach(t=>t.stop());
@@ -554,6 +557,9 @@
         hideErr();
         setStatus('en vivo', 'live');
         showView('live');
+        paused = false;
+        $('btnPause').textContent = 'Pausar';
+        $('btnPause').style.display = 'inline-block';
         $('procNote').style.display = 'none';
         t0 = Date.now();
         timerIv = setInterval(() => { $('timer').textContent = fmtClock((Date.now()-t0)/1000); }, 1000);
@@ -902,6 +908,18 @@
     clearInterval(timerIv);
   }
 
+  /* ════════════ PAUSA (modo en vivo) ════════════ */
+  let paused = false;
+  function setPaused(p){
+    paused = p;
+    // Silencia las pistas de audio sin cerrar la sesión: no se transcribe nada
+    // mientras está en pausa y los hablantes conservan su numeración al reanudar
+    streams.forEach(s => s.getAudioTracks().forEach(t => t.enabled = !p));
+    $('btnPause').textContent = p ? 'Reanudar' : 'Pausar';
+    setStatus(p ? 'en pausa' : 'en vivo', p ? 'busy' : 'live');
+  }
+  $('btnPause').addEventListener('click', () => setPaused(!paused));
+
   function stopAll(errMsg){
     stopping = true;
     fileJobActive = false;
@@ -909,6 +927,8 @@
     if (mode === 'live' && turns.length) downloadTxt(); // respaldo automático al finalizar en vivo
     if (soniox){ try{ soniox.stop(); }catch{} soniox = null; }
     cleanupMedia();
+    paused = false;
+    $('btnPause').style.display = 'none';
     interimTurns = null;
     render();
     setStatus('detenido', '');
