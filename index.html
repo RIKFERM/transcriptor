@@ -96,6 +96,8 @@
   button:hover{background:#2a3442}
   button.primary{background:var(--accent);color:#1a1408;border-color:transparent}
   button.primary:hover{background:#ffc57a}
+  button.chatgpt{background:#10a37f;color:#fff;border-color:transparent}
+  button.chatgpt:hover{background:#0d8f70}
   button.danger{background:transparent;color:var(--danger);border-color:var(--danger)}
   button.danger:hover{background:rgba(255,107,107,.12)}
   button:disabled{opacity:.45;cursor:not-allowed}
@@ -271,6 +273,8 @@
   <footer>
     <button id="btnCopy">Copiar todo</button>
     <button class="primary" id="btnCopyAI" title="Copia una ventana que termina en el momento del clic">Copiar últimos 3 min para IA</button>
+    <button class="chatgpt" id="btnSendAllChatGPT" title="Requiere la extensión privada y un chat vinculado">Enviar todo a ChatGPT</button>
+    <button class="chatgpt" id="btnSendAIChatGPT" title="Requiere la extensión privada y un chat vinculado">Enviar 3 min a ChatGPT</button>
     <button id="btnDownload">Descargar .txt</button>
     <button id="btnAudio" style="display:none">Descargar audio</button>
     <button id="btnResetSpeakers" title="Quitar nombres y deshacer reasignaciones manuales">Restablecer etiquetas</button>
@@ -1114,6 +1118,68 @@
     await writeClipboard(txt, 'Últimos 3 minutos copiados para IA');
   }
 
+  /* ════════════ PUENTE HACIA EL CHAT VINCULADO ════════════ */
+  const chatGPTRequests = new Map();
+
+  function sendThroughExtension(text, kind){
+    if (!text){
+      showCopyMessage('No hay texto para enviar');
+      return;
+    }
+    const requestId = 'tx-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,8);
+    const detectTimer = setTimeout(() => {
+      if (!chatGPTRequests.has(requestId)) return;
+      chatGPTRequests.delete(requestId);
+      showErr('No se detectó la extensión de Chrome. Verifique que esté instalada y que tenga permitido el acceso a archivos locales.');
+    }, 2500);
+    chatGPTRequests.set(requestId, { detectTimer, resultTimer: null });
+    showCopyMessage('Buscando el chat vinculado…');
+    window.postMessage({
+      source: 'soniox-transcriptor',
+      type: 'SEND_TO_LINKED_CHAT',
+      requestId,
+      kind,
+      text
+    }, '*');
+  }
+
+  window.addEventListener('message', e => {
+    if (e.source !== window || !e.data || e.data.source !== 'transcriptor-chatgpt-extension') return;
+    const req = chatGPTRequests.get(e.data.requestId);
+    if (!req) return;
+    if (e.data.type === 'CHATGPT_BRIDGE_ACK'){
+      clearTimeout(req.detectTimer);
+      req.resultTimer = setTimeout(() => {
+        chatGPTRequests.delete(e.data.requestId);
+        showErr('La extensión respondió, pero ChatGPT tardó demasiado. Abra el chat vinculado y vuelva a intentarlo.');
+      }, 30000);
+      showCopyMessage('Extensión detectada; preparando ChatGPT…');
+      return;
+    }
+    if (e.data.type !== 'CHATGPT_BRIDGE_RESULT') return;
+    clearTimeout(req.detectTimer);
+    clearTimeout(req.resultTimer);
+    chatGPTRequests.delete(e.data.requestId);
+    if (e.data.ok){
+      showCopyMessage(e.data.sent
+        ? 'Transcripción enviada a ChatGPT'
+        : 'Texto preparado en el chat vinculado');
+    } else {
+      showErr(e.data.error || 'No fue posible enviar la transcripción al chat vinculado.');
+    }
+  });
+
+  function sendAllToChatGPT(){
+    const body = clipboardFullText();
+    sendThroughExtension(body
+      ? `TRANSCRIPCIÓN ACUMULADA DE LA SESIÓN\n\n${body}`
+      : '', 'all');
+  }
+
+  function sendRecentToChatGPT(){
+    sendThroughExtension(recentAIText(180), 'recent');
+  }
+
   function downloadText(txt, name){
     if (!txt) return;
     const blob = new Blob([txt], {type:'text/plain;charset=utf-8'});
@@ -1275,6 +1341,8 @@
   $('btnStop').addEventListener('click', () => stopAll(null));
   $('btnCopy').addEventListener('click', copyAll);
   $('btnCopyAI').addEventListener('click', copyRecentAI);
+  $('btnSendAllChatGPT').addEventListener('click', sendAllToChatGPT);
+  $('btnSendAIChatGPT').addEventListener('click', sendRecentToChatGPT);
   $('btnDownload').addEventListener('click', downloadTxt);
   $('btnResetSpeakers').addEventListener('click', resetSpeakerLabels);
   $('btnClear').addEventListener('click', () => {
