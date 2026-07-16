@@ -68,6 +68,7 @@
     color:var(--text);padding:6px 12px;margin-right:10px;cursor:pointer;font-size:13px;
   }
   input:focus,select:focus{border-color:var(--accent)}
+  .field-help{display:block;color:var(--muted);font-size:12.5px;margin-top:6px}
   .check{display:flex;align-items:flex-start;gap:10px;margin-top:12px;cursor:pointer}
   .check input{margin-top:3px;accent-color:var(--accent)}
   .check span{font-size:14px;color:var(--text)}
@@ -195,6 +196,13 @@
       <option value="es,en">Mixto (español / inglés)</option>
       <option value="en">Inglés</option>
     </select>
+
+    <label for="liveProfile">Prioridad de la transcripción en vivo</label>
+    <select id="liveProfile">
+      <option value="accuracy" selected>Mayor precisión de hablantes (recomendado)</option>
+      <option value="fast">Respuesta más rápida</option>
+    </select>
+    <small class="field-help" id="liveProfileHelp">Muestra el texto provisional al momento y confirma la voz cuando el modelo tiene más contexto.</small>
   </div>
 
   <div class="card">
@@ -225,6 +233,9 @@
 
     <div class="hint">
       <b>Recomendado:</b> elija la <b>pestaña</b> del navegador donde corre la reunión (Meet, Teams web, Zoom web) y marque «Compartir audio». <b>En Windows</b> también puede elegir «Pantalla completa» y marcar «Compartir audio del sistema». <b>En Mac</b> el sistema no permite capturar el audio de toda la laptop al compartir pantalla: para eso, instale BlackHole (gratuito) y selecciónelo como entrada en la opción de micrófono de arriba.
+    </div>
+    <div class="hint">
+      <b>Para evitar voces duplicadas:</b> use «Audio del sistema» + «Mi micrófono». No active además una entrada virtual que ya contenga el mismo audio de la reunión. Con audífonos, la separación suele ser más limpia.
     </div>
 
     <button class="primary fullbtn" id="btnStart">Iniciar transcripción en vivo</button>
@@ -258,14 +269,16 @@
     <div id="empty">La transcripción aparecerá aquí.</div>
   </div>
   <footer>
-    <button class="primary" id="btnCopy">Copiar todo</button>
+    <button id="btnCopy">Copiar todo</button>
+    <button class="primary" id="btnCopyAI" title="Copia una ventana que termina en el momento del clic">Copiar últimos 3 min para IA</button>
     <button id="btnDownload">Descargar .txt</button>
     <button id="btnAudio" style="display:none">Descargar audio</button>
+    <button id="btnResetSpeakers" title="Quitar nombres y deshacer reasignaciones manuales">Restablecer etiquetas</button>
     <button id="btnClear">Limpiar</button>
     <button id="btnNew">Nueva transcripción</button>
     <button id="btnAttach" style="display:none">Cargar audio para escuchar</button>
     <input type="file" id="attachInput" accept="audio/*,video/*" style="display:none">
-    <span id="footNote">▶ escucha el fragmento · clic en «Speaker N» para asignarle nombre.</span>
+    <span id="footNote">Texto tenue = en proceso · la voz se confirma después · clic en «Speaker N» para asignarle nombre.</span>
     <div class="spacer"></div>
     <span id="copyMsg">Copiado al portapapeles</span>
     <button id="btnPause" style="display:none">Pausar</button>
@@ -282,7 +295,7 @@
 
   let soniox = null, audioCtx = null;
   let streams = [];              // streams originales para poder detenerlos
-  let turns = [];                // [{speaker:int, text:string, t:seconds|null}]
+  let turns = [];                // [{speaker, originalSpeaker, text, t, endT, parts:[{text,t}]}]
   let interimTurns = null;
   let speakerNames = {};         // {1:"Ricardo", 2:"Cliente"...}
   let timerIv = null, t0 = null;
@@ -293,6 +306,16 @@
   let recRecorder = null, recChunks = [], recBlob = null;
   const MAX_HIST = 30;   // límite de transcripciones en el historial (ajustable)
   let stopping = false, fileJobActive = false;
+  let activeLiveProfile = 'accuracy';
+
+  const LIVE_PROFILE_HELP = {
+    accuracy: 'Muestra el texto provisional al momento y confirma la voz cuando el modelo tiene más contexto.',
+    fast: 'Muestra texto provisional y cierra las intervenciones automáticamente; puede confundir más las voces.'
+  };
+
+  $('liveProfile').addEventListener('change', e => {
+    $('liveProfileHelp').textContent = LIVE_PROFILE_HELP[e.target.value] || '';
+  });
 
   const setStatus = (txt, cls) => {
     $('statusTxt').textContent = txt;
@@ -431,7 +454,16 @@
   function openSession(s){
     stopping = true; fileJobActive = false;
     currentSession = s;
-    turns = s.turns || [];
+    // Las sesiones anteriores a esta función no guardaban la etiqueta original.
+    // En ellas, la etiqueta disponible al abrirse se toma como punto de partida.
+    turns = (s.turns || []).map(t => ({
+      ...t,
+      originalSpeaker: t.originalSpeaker != null ? t.originalSpeaker : t.speaker,
+      endT: t.endT != null ? t.endT : t.t,
+      parts: Array.isArray(t.parts) && t.parts.length
+        ? t.parts
+        : [{ text: t.text || '', t: t.t != null ? t.t : null }]
+    }));
     speakerNames = s.speakerNames || {};
     interimTurns = null;
     mode = 'history';
@@ -587,7 +619,7 @@
   async function startLive(apiKey, langs, stream){
     let SonioxClient;
     try {
-      ({ SonioxClient } = await import('https://unpkg.com/@soniox/speech-to-text-web?module'));
+      ({ SonioxClient } = await import('https://unpkg.com/@soniox/speech-to-text-web@1.4.0?module'));
     } catch {
       throw new Error('No fue posible cargar el componente de transcripción en vivo (se requiere internet para descargarlo). El modo de archivo grabado no depende de este componente.');
     }
@@ -619,15 +651,17 @@
       }
     });
 
-    soniox.start({
+    activeLiveProfile = $('liveProfile').value;
+    const liveConfig = {
       model: 'stt-rt-v5',
       stream,                        // stream mezclado (sistema + micrófono)
       audioFormat: 'auto',
       languageHints: langs,
       enableSpeakerDiarization: true,
-      enableEndpointDetection: true,
-      maxEndpointDelayMs: 1000       // fija el texto más rápido (por defecto ~2000 ms)
-    });
+      // false deja más contexto para estabilizar la separación de voces.
+      enableEndpointDetection: activeLiveProfile === 'fast'
+    };
+    soniox.start(liveConfig);
   }
 
   function handleLiveTokens(result){
@@ -641,6 +675,8 @@
       if (tok.is_final) appendTo(turns, sp, tok.text, t);
       else appendTo(interim, sp, tok.text, t);
     }
+    // El contenido provisional aparece de inmediato. En modo precisión, la UI
+    // oculta únicamente la identidad provisional y la confirma después.
     interimTurns = interim.length ? interim : null;
     render();
     scheduleSave(); // autoguardado del historial durante la sesión en vivo
@@ -793,21 +829,39 @@
   // Los tokens de Soniox traen su propio espaciado (" hola"), se concatenan tal cual.
   function appendTo(list, sp, text, t){
     const last = list[list.length-1];
-    if (last && last.speaker === sp) last.text += text;
-    else list.push({ speaker: sp, text: text.replace(/^\s+/,''), t });
+    if (last && last.speaker === sp){
+      if (!Array.isArray(last.parts)) last.parts = [{ text: last.text, t: last.t }];
+      last.text += text;
+      last.parts.push({ text, t });
+      if (t != null) last.endT = t;
+    } else {
+      const clean = text.replace(/^\s+/,'');
+      list.push({
+        speaker: sp,
+        originalSpeaker: sp,
+        text: clean,
+        t,
+        endT: t,
+        parts: [{ text: clean, t }]
+      });
+    }
   }
 
   const spName = n => speakerNames[n] || ('Speaker ' + n);
   const spColor = n => `var(${SP_COLORS[(n-1+SP_COLORS.length*10) % SP_COLORS.length]})`;
 
   function turnHTML(t, interim, idx){
-    const c = spColor(t.speaker);
+    const namedProvisional = interim && activeLiveProfile === 'accuracy' && !!speakerNames[t.speaker];
+    const pendingVoice = interim && activeLiveProfile === 'accuracy' && !namedProvisional;
+    const c = pendingVoice ? 'var(--muted)' : spColor(t.speaker);
     return `<div class="turn${interim?' interim':''}" data-i="${idx}">
       <div class="rail" style="background:${c}"></div>
       <div class="body">
         <div class="who">
           ${(!interim && t.t != null && audioURL) ? `<button class="play" data-i="${idx}" title="Escuchar este fragmento">&#9654;</button>` : ''}
-          <span class="name" data-sp="${t.speaker}" title="Clic para renombrar" style="color:${c}">${escapeHtml(spName(t.speaker))}</span>
+          ${pendingVoice
+            ? `<span style="color:${c}">Voz por confirmar</span>`
+            : `<span class="name" data-sp="${t.speaker}" title="Clic para renombrar" style="color:${c}">${escapeHtml(spName(t.speaker))}${namedProvisional ? ' <span style="color:var(--muted)">(provisional)</span>' : ''}</span>`}
           ${!interim ? `<button class="reassign" data-i="${idx}" title="Esta intervención es de otra persona — reasignar">&#8646;</button>` : ''}
           ${(!interim && t.t != null) ? `<span class="ts">${fmtClock(t.t)}</span>` : ''}
         </div>
@@ -943,12 +997,100 @@
     if (spMenuEl && !spMenuEl.contains(e.target) && !e.target.closest('.reassign')) closeSpMenu();
   });
 
-  /* ════════════ COPIAR / EXPORTAR ════════════ */
-  const fullText = () =>
-    turns.map(t => `${t.t != null ? '['+fmtClock(t.t)+'] ' : ''}${spName(t.speaker)}: ${t.text}`).join('\n');
+  /* ════════════ RESTABLECER ETIQUETAS DE SONIOX ════════════ */
+  function resetSpeakerLabels(){
+    if (!turns.length) return;
+    const changed = Object.keys(speakerNames).length > 0 || turns.some(t =>
+      t.originalSpeaker != null && t.speaker !== t.originalSpeaker
+    );
+    if (!changed) return;
+    if (!confirm('¿Restablecer los hablantes como los identificó Soniox? Se eliminarán los nombres y las reasignaciones manuales.')) return;
 
-  async function copyAll(){
-    const txt = fullText();
+    speakerNames = {};
+    turns.forEach(t => {
+      if (t.originalSpeaker != null) t.speaker = t.originalSpeaker;
+    });
+    closeSpMenu();
+    render();
+    saveSession();
+  }
+
+  /* ════════════ COPIAR / EXPORTAR ════════════ */
+  const exportSpeaker = (t, provisional) => {
+    if (!provisional) return spName(t.speaker);
+    return speakerNames[t.speaker]
+      ? `${speakerNames[t.speaker]} (provisional)`
+      : 'Voz por confirmar';
+  };
+
+  const entryText = (t, provisional=false) =>
+    `${t.t != null ? '['+fmtClock(t.t)+'] ' : ''}${exportSpeaker(t, provisional)}: ${t.text}`;
+
+  const confirmedText = () => turns.map(t => entryText(t, false)).join('\n');
+
+  // Para copiar durante la conversación se incluye también la frase que Soniox
+  // aún está procesando. Las descargas conservan únicamente texto confirmado.
+  const clipboardFullText = () => [
+    ...turns.map(t => entryText(t, false)),
+    ...(interimTurns || []).map(t => entryText(t, true))
+  ].join('\n');
+
+  function transcriptEndTime(){
+    let end = 0;
+    const all = [...turns, ...(interimTurns || [])];
+    for (const t of all){
+      if (t.endT != null) end = Math.max(end, t.endT);
+      else if (t.t != null) end = Math.max(end, t.t);
+    }
+    // En una sesión activa, los silencios también forman parte de la ventana.
+    if (mode === 'live' && !stopping && t0 != null){
+      end = Math.max(end, (Date.now() - t0) / 1000);
+    }
+    return end;
+  }
+
+  function sliceTurnSince(t, cutoff){
+    const parts = Array.isArray(t.parts) && t.parts.length
+      ? t.parts
+      : [{ text: t.text, t: t.t }];
+    const selected = parts.filter(p => p.t == null || p.t >= cutoff);
+    if (!selected.length){
+      const end = t.endT != null ? t.endT : t.t;
+      if (end == null || end < cutoff) return null;
+      return { ...t };
+    }
+    const clipped = selected.length < parts.length;
+    const text = selected.map(p => p.text).join('').replace(/^\s+/,'');
+    if (!text) return null;
+    const firstTime = selected.find(p => p.t != null);
+    return {
+      ...t,
+      text: (clipped ? '…' : '') + text,
+      t: firstTime ? firstTime.t : t.t
+    };
+  }
+
+  function recentAIText(seconds=180){
+    const cutoff = Math.max(0, transcriptEndTime() - seconds);
+    const confirmed = turns.map(t => sliceTurnSince(t, cutoff)).filter(Boolean);
+    const provisional = (interimTurns || []).map(t => sliceTurnSince(t, cutoff)).filter(Boolean);
+    const lines = [
+      ...confirmed.map(t => entryText(t, false)),
+      ...provisional.map(t => entryText(t, true))
+    ];
+    return lines.length
+      ? `CONTEXTO RECIENTE DE LA SESIÓN (ÚLTIMOS 3 MINUTOS)\n\n${lines.join('\n')}`
+      : '';
+  }
+
+  function showCopyMessage(message){
+    const m = $('copyMsg');
+    m.textContent = message;
+    m.classList.add('show');
+    setTimeout(() => m.classList.remove('show'), 1800);
+  }
+
+  async function writeClipboard(txt, message){
     if (!txt) return;
     try { await navigator.clipboard.writeText(txt); }
     catch {
@@ -956,8 +1098,20 @@
       ta.value = txt; document.body.appendChild(ta);
       ta.select(); document.execCommand('copy'); ta.remove();
     }
-    const m = $('copyMsg'); m.classList.add('show');
-    setTimeout(() => m.classList.remove('show'), 1800);
+    showCopyMessage(message);
+  }
+
+  async function copyAll(){
+    await writeClipboard(clipboardFullText(), 'Toda la transcripción fue copiada');
+  }
+
+  async function copyRecentAI(){
+    const txt = recentAIText(180);
+    if (!txt){
+      showCopyMessage('No hay texto en los últimos 3 minutos');
+      return;
+    }
+    await writeClipboard(txt, 'Últimos 3 minutos copiados para IA');
   }
 
   function downloadText(txt, name){
@@ -969,7 +1123,7 @@
     a.download = (base || 'transcripcion-' + new Date().toISOString().slice(0,16).replace(/[:T]/g,'-')) + '.txt';
     a.click(); URL.revokeObjectURL(a.href);
   }
-  const downloadTxt = () => downloadText(fullText(), currentSession && currentSession.titulo);
+  const downloadTxt = () => downloadText(confirmedText(), currentSession && currentSession.titulo);
 
   /* ════════════ CICLO DE VIDA ════════════ */
   async function startLiveClick(){
@@ -1120,7 +1274,9 @@
   $('btnFile').addEventListener('click', transcribeFile);
   $('btnStop').addEventListener('click', () => stopAll(null));
   $('btnCopy').addEventListener('click', copyAll);
+  $('btnCopyAI').addEventListener('click', copyRecentAI);
   $('btnDownload').addEventListener('click', downloadTxt);
+  $('btnResetSpeakers').addEventListener('click', resetSpeakerLabels);
   $('btnClear').addEventListener('click', () => {
     currentSession = null;      // limpia la vista sin borrar lo ya guardado en el historial
     refreshTitle();
