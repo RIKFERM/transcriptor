@@ -485,6 +485,19 @@
   attachDevicePicker('srcMyMic', 'myMicDevice');
 
   /* ════════════ CAPTURA DE AUDIO (modo en vivo) ════════════ */
+  // Cuando una fuente de audio termina inesperadamente: si quedan otras vivas,
+  // la transcripción continúa; si era la única, se detiene indicando la causa.
+  function sourceEnded(nombre){
+    if (stopping) return;
+    const quedanVivas = streams.some(s => s.getAudioTracks().some(t => t.readyState === 'live'));
+    if (quedanVivas){
+      showErr('Se desconectó ' + nombre + '. La transcripción continúa con las demás fuentes.');
+    } else {
+      stopAll(null);
+      showErr('La transcripción se detuvo porque dejó de recibirse ' + nombre + '.');
+    }
+  }
+
   async function getMixedStream(useSystem, useMic, useMyMic){
     const tracks = [];
     if (useSystem){
@@ -502,7 +515,7 @@
         throw new Error('No se recibió audio del sistema. Repita el proceso y marque la casilla «Compartir audio» en el diálogo de compartir pantalla/pestaña.');
       }
       tracks.push(...a);
-      a[0].addEventListener('ended', () => { if(!stopping) stopAll(null); });
+      a[0].addEventListener('ended', () => sourceEnded('el audio del sistema (la compartición de pantalla terminó)'));
     }
     if (useMic){
       const devId = $('micDevice').value;
@@ -517,6 +530,7 @@
       const mic = await navigator.mediaDevices.getUserMedia({ audio: constraints });
       streams.push(mic);
       tracks.push(...mic.getAudioTracks());
+      mic.getAudioTracks()[0].addEventListener('ended', () => sourceEnded('la entrada de audio seleccionada'));
     }
     if (useMyMic){
       const devId = $('myMicDevice').value;
@@ -527,6 +541,7 @@
       const myMic = await navigator.mediaDevices.getUserMedia({ audio: c });
       streams.push(myMic);
       tracks.push(...myMic.getAudioTracks());
+      myMic.getAudioTracks()[0].addEventListener('ended', () => sourceEnded('su micrófono'));
     }
     if (tracks.length === 1) return new MediaStream(tracks);
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -565,7 +580,12 @@
         timerIv = setInterval(() => { $('timer').textContent = fmtClock((Date.now()-t0)/1000); }, 1000);
       },
       onPartialResult: handleLiveTokens,
-      onFinished: () => { if (!stopping) stopAll(null); }
+      onFinished: () => {
+        if (!stopping){
+          stopAll(null);
+          showErr('El servicio de transcripción cerró la sesión.');
+        }
+      }
     });
 
     soniox.start({
@@ -882,6 +902,7 @@
     if (!key) return showErr('Ingrese su clave de API de Soniox.');
     if (!useSystem && !useMic && !useMyMic) return showErr('Seleccione al menos una fuente de audio.');
     mode = 'live'; stopping = false;
+    startKeepAwake(); // dentro del clic, para que el navegador permita el audio
     resetTranscript();
     newSession('live', 'Sesión ' + fechaMX(new Date().toISOString()).replace(/[/:]/g, '-'));
     $('btnAttach').style.display = 'none';
@@ -902,6 +923,7 @@
   }
 
   function cleanupMedia(){
+    stopKeepAwake();
     streams.forEach(s => s.getTracks().forEach(t => t.stop()));
     streams = [];
     if (audioCtx){ try{audioCtx.close();}catch{} audioCtx = null; }
@@ -909,6 +931,28 @@
   }
 
   /* ════════════ PAUSA (modo en vivo) ════════════ */
+  // Mantener la pestaña activa: Chrome congela pestañas en segundo plano
+  // (y eso mata la sesión), pero nunca congela una pestaña que reproduce audio.
+  // Se reproduce un tono grave a volumen imperceptible mientras hay sesión.
+  let awakeCtx = null, awakeOsc = null;
+  function startKeepAwake(){
+    try {
+      awakeCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const g = awakeCtx.createGain();
+      g.gain.value = 0.001;            // imperceptible
+      awakeOsc = awakeCtx.createOscillator();
+      awakeOsc.frequency.value = 30;   // tono muy grave
+      awakeOsc.connect(g); g.connect(awakeCtx.destination);
+      awakeOsc.start();
+      if (awakeCtx.state === 'suspended') awakeCtx.resume();
+    } catch {}
+  }
+  function stopKeepAwake(){
+    try { if (awakeOsc) awakeOsc.stop(); } catch {}
+    try { if (awakeCtx) awakeCtx.close(); } catch {}
+    awakeOsc = null; awakeCtx = null;
+  }
+
   let paused = false;
   function setPaused(p){
     paused = p;
