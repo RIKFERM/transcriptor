@@ -130,6 +130,14 @@
   }
   .turn .who .name{cursor:pointer;border-bottom:1px dashed transparent}
   .turn .who .name:hover{border-bottom-color:currentColor}
+  .speaker-edit{
+    width:180px;max-width:45vw;padding:3px 7px;border:1px solid var(--accent);
+    border-radius:5px;background:var(--panel);color:var(--text);font:inherit;
+  }
+  .render-limit-note{
+    color:var(--muted);font:12px/1.4 var(--mono);text-align:center;
+    padding:8px 10px;margin-bottom:14px;border:1px solid var(--line);border-radius:7px;
+  }
   .turn .who .ts{color:var(--muted);letter-spacing:0}
   .turn .who .play{
     border:none;background:transparent;color:var(--muted);cursor:pointer;
@@ -249,6 +257,13 @@
 
     <label for="fileInput">Archivo de audio o video</label>
     <input type="file" id="fileInput" accept="audio/*,video/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.webm,.mp4,.mov,.mkv">
+
+    <label class="check">
+      <input type="checkbox" id="smoothFileSpeakers" checked>
+      <span>Corregir speakers falsos muy breves
+        <small>Si aparece una voz nueva únicamente durante una frase muy corta entre dos intervenciones de la misma persona, recupera conservadoramente la etiqueta anterior. Puede desactivarlo si hay participantes que solo dicen respuestas muy breves.</small>
+      </span>
+    </label>
 
     <button class="primary fullbtn" id="btnFile">Transcribir archivo</button>
   </div>
@@ -401,15 +416,14 @@
     saveSession();
   });
 
-  function saveSession(){
+  function saveSession(refreshList=false){
     if (!db || !currentSession || !turns.length) return;
     currentSession.turns = turns;
     currentSession.speakerNames = speakerNames;
     currentSession.updated = new Date().toISOString();
-    dbPut(currentSession)
-      .then(pruneHistory)
-      .then(renderHistory)
-      .catch(()=>{});
+    const write = dbPut(currentSession);
+    if (refreshList) write.then(pruneHistory).then(renderHistory).catch(()=>{});
+    else write.catch(()=>{});
   }
 
   // Si el historial excede el límite, elimina las transcripciones más antiguas
@@ -422,7 +436,10 @@
       try { await dbDelete(s.id); } catch {}
     }
   }
-  function scheduleSave(){ clearTimeout(saveTimer); saveTimer = setTimeout(saveSession, 3000); }
+  function scheduleSave(){
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => saveSession(false), 10000);
+  }
 
   const nameIn = (s, sp) => (s.speakerNames && s.speakerNames[sp]) || ('Speaker ' + sp);
   const textOf = s => (s.turns||[]).map(t =>
@@ -620,6 +637,7 @@
   }
 
   /* ════════════ MODO EN VIVO (Soniox tiempo real) ════════════ */
+  const CONNECT_TIMEOUT_MS = 15000;
   async function startLive(apiKey, langs, stream){
     let SonioxClient;
     try {
@@ -627,15 +645,41 @@
     } catch {
       throw new Error('No fue posible cargar el componente de transcripción en vivo (se requiere internet para descargarlo). El modo de archivo grabado no depende de este componente.');
     }
-    soniox = new SonioxClient({
+    let started = false;
+    let resolveStart, rejectStart;
+    const startReady = new Promise((resolve, reject) => {
+      resolveStart = resolve;
+      rejectStart = reject;
+    });
+    const connectionTimer = setTimeout(() => {
+      if (started) return;
+      try { if (soniox) soniox.cancel(); } catch {}
+      soniox = null;
+      rejectStart(new Error('Soniox no respondió en 15 segundos. Revise su conexión, cierre otras pestañas del transcriptor e intente nuevamente.'));
+    }, CONNECT_TIMEOUT_MS);
+
+    const client = new SonioxClient({
       apiKey,
+      keepAlive: true,
+      keepAliveInterval: 5000,
       onError: (status, message) => {
         if (stopping) return;
-        stopAll(/auth|key|401|unauthorized/i.test(String(status)+' '+String(message))
+        const friendly = /auth|key|401|unauthorized/i.test(String(status)+' '+String(message))
           ? 'Clave de API rechazada. Verifique que sea válida y tenga crédito disponible.'
-          : ('Error del servicio de transcripción: ' + (message || status)));
+          : ('Error del servicio de transcripción: ' + (message || status));
+        if (!started){
+          clearTimeout(connectionTimer);
+          rejectStart(new Error(friendly));
+          return;
+        }
+        stopAll(friendly);
       },
       onStarted: () => {
+        if (!started){
+          started = true;
+          clearTimeout(connectionTimer);
+          resolveStart();
+        }
         hideErr();
         setStatus('en vivo', 'live');
         showView('live');
@@ -648,12 +692,18 @@
       },
       onPartialResult: handleLiveTokens,
       onFinished: () => {
+        if (!started){
+          clearTimeout(connectionTimer);
+          rejectStart(new Error('Soniox cerró la conexión antes de comenzar a transcribir.'));
+          return;
+        }
         if (!stopping){
           stopAll(null);
           showErr('El servicio de transcripción cerró la sesión.');
         }
       }
     });
+    soniox = client;
 
     activeLiveProfile = $('liveProfile').value;
     const liveConfig = {
@@ -665,7 +715,15 @@
       // false deja más contexto para estabilizar la separación de voces.
       enableEndpointDetection: activeLiveProfile === 'fast'
     };
-    soniox.start(liveConfig);
+    try {
+      await client.start(liveConfig);
+      await startReady;
+    } catch (error){
+      clearTimeout(connectionTimer);
+      try { client.cancel(); } catch {}
+      if (soniox === client) soniox = null;
+      throw error;
+    }
   }
 
   function handleLiveTokens(result){
@@ -682,7 +740,7 @@
     // El contenido provisional aparece de inmediato. En modo precisión, la UI
     // oculta únicamente la identidad provisional y la confirma después.
     interimTurns = interim.length ? interim : null;
-    render();
+    scheduleRender();
     scheduleSave(); // autoguardado del historial durante la sesión en vivo
   }
 
@@ -704,8 +762,11 @@
   }
 
   const isVideo = f => f.type.startsWith('video/') || /\.(mp4|mov|mkv|avi|wmv)$/i.test(f.name);
+  const isSonioxNativeFile = f => /\.(aac|aiff|amr|asf|flac|mp3|ogg|wav|webm|m4a|mp4)$/i.test(f.name);
 
-  // Extrae el audio de un video (o cualquier archivo decodificable) y lo codifica como WAV mono 16 kHz
+  // Solo convierte contenedores que Soniox no recibe directamente. Conserva
+  // hasta dos canales y una frecuencia de muestreo alta para no perder pistas
+  // acústicas que ayudan a separar las voces.
   async function extractWav(file, note){
     note('extrayendo audio del video…');
     const buf = await file.arrayBuffer();
@@ -713,28 +774,64 @@
     let decoded;
     try { decoded = await ac.decodeAudioData(buf); }
     finally { try{ac.close();}catch{} }
-    const rate = 16000;
-    const off = new OfflineAudioContext(1, Math.ceil(decoded.duration * rate), rate);
+    const rate = Math.min(48000, Math.max(16000, decoded.sampleRate || 48000));
+    const channels = Math.min(2, Math.max(1, decoded.numberOfChannels || 1));
+    const off = new OfflineAudioContext(channels, Math.ceil(decoded.duration * rate), rate);
     const src = off.createBufferSource();
     src.buffer = decoded; src.connect(off.destination); src.start();
     const rendered = await off.startRendering();
-    return encodeWav(rendered.getChannelData(0), rate);
+    return encodeWav(
+      Array.from({length: channels}, (_, index) => rendered.getChannelData(index)),
+      rate
+    );
   }
 
-  function encodeWav(samples, rate){
-    const buf = new ArrayBuffer(44 + samples.length * 2);
+  function encodeWav(channelData, rate){
+    const channels = channelData.length;
+    const sampleCount = channelData[0].length;
+    const dataBytes = sampleCount * channels * 2;
+    const buf = new ArrayBuffer(44 + dataBytes);
     const v = new DataView(buf);
     const wstr = (o,s) => { for(let i=0;i<s.length;i++) v.setUint8(o+i, s.charCodeAt(i)); };
-    wstr(0,'RIFF'); v.setUint32(4, 36 + samples.length*2, true); wstr(8,'WAVE');
-    wstr(12,'fmt '); v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
-    v.setUint32(24,rate,true); v.setUint32(28,rate*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true);
-    wstr(36,'data'); v.setUint32(40, samples.length*2, true);
+    wstr(0,'RIFF'); v.setUint32(4, 36 + dataBytes, true); wstr(8,'WAVE');
+    wstr(12,'fmt '); v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,channels,true);
+    v.setUint32(24,rate,true); v.setUint32(28,rate*channels*2,true); v.setUint16(32,channels*2,true); v.setUint16(34,16,true);
+    wstr(36,'data'); v.setUint32(40, dataBytes, true);
     let o = 44;
-    for (let i=0;i<samples.length;i++,o+=2){
-      const s = Math.max(-1, Math.min(1, samples[i]));
-      v.setInt16(o, s < 0 ? s*0x8000 : s*0x7FFF, true);
+    for (let i=0;i<sampleCount;i++){
+      for (let channel=0;channel<channels;channel++,o+=2){
+        const s = Math.max(-1, Math.min(1, channelData[channel][i]));
+        v.setInt16(o, s < 0 ? s*0x8000 : s*0x7FFF, true);
+      }
     }
     return new Blob([buf], {type:'audio/wav'});
+  }
+
+  // Corrige únicamente etiquetas nuevas con presencia mínima en todo el
+  // archivo y que aparecen entre dos turnos del mismo speaker. Se conserva
+  // originalSpeaker para que «Restablecer etiquetas» pueda deshacerlo.
+  function smoothRareFileSpeakers(){
+    const stats = new Map();
+    for (const turn of turns){
+      const current = stats.get(turn.speaker) || { turns:0, words:0 };
+      current.turns += 1;
+      current.words += (turn.text.trim().match(/\S+/g) || []).length;
+      stats.set(turn.speaker, current);
+    }
+    let corrected = 0;
+    for (let index=1; index<turns.length-1; index++){
+      const previous = turns[index-1];
+      const current = turns[index];
+      const next = turns[index+1];
+      const stat = stats.get(current.speaker);
+      const currentWords = (current.text.trim().match(/\S+/g) || []).length;
+      if (previous.speaker === next.speaker && current.speaker !== previous.speaker &&
+          stat && stat.turns <= 2 && stat.words <= 6 && currentWords <= 4){
+        current.speaker = previous.speaker;
+        corrected += 1;
+      }
+    }
+    return corrected;
   }
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -759,9 +856,11 @@
     let fileId = null, trId = null;
 
     try {
-      // 1) Preparar el archivo (extraer audio si es video)
+      // 1) Preparar el archivo. MP4 y WebM se envían directamente para
+      // conservar sus canales y calidad; solo se convierten contenedores no
+      // admitidos por Soniox, como MOV o MKV.
       let blob = f, name = f.name;
-      if (isVideo(f)){
+      if (isVideo(f) && !isSonioxNativeFile(f)){
         blob = await extractWav(f, note);
         name = 'audio.wav';
       }
@@ -808,10 +907,15 @@
         if (!isNaN(sp)) lastSpeaker = sp;
         appendTo(turns, sp, tok.text, tok.start_ms != null ? tok.start_ms/1000 : null);
       }
+      const correctedSpeakers = $('smoothFileSpeakers').checked
+        ? smoothRareFileSpeakers()
+        : 0;
       render();
       $('procNote').style.display = 'none';
-      setStatus('completado', '');
-      saveSession();
+      setStatus(correctedSpeakers
+        ? `completado · ${correctedSpeakers} etiqueta${correctedSpeakers===1?'':'s'} breve${correctedSpeakers===1?'':'s'} corregida${correctedSpeakers===1?'':'s'}`
+        : 'completado', '');
+      saveSession(true);
     } catch (e){
       showView('setup');
       setStatus('inactivo', '');
@@ -874,12 +978,83 @@
     </div>`;
   }
 
+  const MAX_RENDERED_TURNS = 250;
+  let renderFrame = null;
+  function scheduleRender(){
+    if (renderFrame != null) return;
+    const raf = window.requestAnimationFrame || (callback => setTimeout(callback, 16));
+    renderFrame = raf(() => {
+      renderFrame = null;
+      if (mode === 'live') renderLiveIncremental();
+      else render();
+    });
+  }
+
+  function appendInterimHTML(box){
+    box.querySelectorAll('.turn.interim').forEach(el => el.remove());
+    if (interimTurns && interimTurns.length){
+      box.insertAdjacentHTML('beforeend', interimTurns.map(t => turnHTML(t, true, -1)).join(''));
+    }
+  }
+
+  // En vivo solo cambia el último turno confirmado y el texto provisional.
+  // Se evita reconstruir cientos de nodos con cada paquete de Soniox.
+  function renderLiveIncremental(){
+    const box = $('transcript');
+    if (box.querySelector('.speaker-edit')) return;
+    const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    const first = Math.max(0, turns.length - MAX_RENDERED_TURNS);
+    const expectedCount = turns.length - first;
+    const confirmed = [...box.querySelectorAll('.turn:not(.interim)')];
+    const currentFirst = Number(box.dataset.firstTurn || 0);
+
+    // Cuando la ventana visual avanza, o la estructura no coincide, se hace
+    // una reconstrucción controlada. En los demás paquetes solo cambia la cola.
+    const structureMismatch = currentFirst !== first || confirmed.length > expectedCount ||
+      confirmed.some((el, offset) => parseInt(el.dataset.i, 10) !== first + offset);
+    if (structureMismatch){
+      render();
+      return;
+    }
+
+    const empty = box.querySelector('#empty');
+    if (empty) empty.remove();
+    appendInterimHTML(box);
+
+    if (expectedCount){
+      const visibleBefore = [...box.querySelectorAll('.turn:not(.interim)')];
+      if (visibleBefore.length){
+        const lastOffset = visibleBefore.length - 1;
+        const lastIndex = first + lastOffset;
+        visibleBefore[lastOffset].outerHTML = turnHTML(turns[lastIndex], false, lastIndex);
+      }
+      for (let index = first + visibleBefore.length; index < turns.length; index++){
+        const interimNode = box.querySelector('.turn.interim');
+        if (interimNode) interimNode.insertAdjacentHTML('beforebegin', turnHTML(turns[index], false, index));
+        else box.insertAdjacentHTML('beforeend', turnHTML(turns[index], false, index));
+      }
+    }
+
+    appendInterimHTML(box);
+    box.dataset.firstTurn = String(first);
+    if (!box.children.length) box.innerHTML = '<div id="empty">La transcripción aparecerá aquí.</div>';
+    if (stick) box.scrollTop = box.scrollHeight;
+  }
+
   function render(){
     const box = $('transcript');
+    // Mientras se escribe un nombre, no se reemplaza el campo. El audio y los
+    // tokens continúan procesándose sin bloquear el hilo principal.
+    if (box.querySelector('.speaker-edit')) return;
     const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
-    let html = turns.map((t,i) => turnHTML(t, false, i)).join('');
+    const first = Math.max(0, turns.length - MAX_RENDERED_TURNS);
+    let html = first
+      ? `<div class="render-limit-note">Se muestran las últimas ${MAX_RENDERED_TURNS} intervenciones. La transcripción completa permanece guardada y se incluye al copiar o descargar.</div>`
+      : '';
+    html += turns.slice(first).map((t,i) => turnHTML(t, false, i + first)).join('');
     if (interimTurns) html += interimTurns.map(t => turnHTML(t, true, -1)).join('');
     box.innerHTML = html || '<div id="empty">La transcripción aparecerá aquí.</div>';
+    box.dataset.firstTurn = String(first);
     if (stick) box.scrollTop = box.scrollHeight;
     if (audioEl) refreshPlayButtons();
   }
@@ -935,6 +1110,35 @@
     refreshPlayButtons();
   }
 
+  function beginSpeakerRename(el, sp){
+    const input = document.createElement('input');
+    input.className = 'speaker-edit';
+    input.value = speakerNames[sp] || '';
+    input.placeholder = 'Nombre de Speaker ' + sp;
+    el.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let finished = false;
+    const finish = save => {
+      if (finished) return;
+      finished = true;
+      if (save){
+        const limpio = input.value.trim();
+        if (limpio) speakerNames[sp] = limpio;
+        else delete speakerNames[sp];
+        saveSession(false);
+      }
+      if (input.isConnected) input.remove();
+      render();
+    };
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Enter'){ event.preventDefault(); finish(true); }
+      else if (event.key === 'Escape'){ event.preventDefault(); finish(false); }
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
   // Reproducir fragmento, reasignar intervención o renombrar hablantes
   $('transcript').addEventListener('click', e => {
     const pb = e.target.closest('.play');
@@ -944,13 +1148,7 @@
     const el = e.target.closest('.name');
     if (!el) return;
     const sp = parseInt(el.dataset.sp, 10);
-    const nuevo = prompt(`Nombre para ${spName(sp)}:`, speakerNames[sp] || '');
-    if (nuevo === null) return;
-    const limpio = nuevo.trim();
-    if (limpio) speakerNames[sp] = limpio;
-    else delete speakerNames[sp];   // vacío = volver a "Speaker N"
-    render();
-    saveSession();
+    beginSpeakerRename(el, sp);
   });
 
   function escapeHtml(s){
@@ -1303,7 +1501,7 @@
   function stopAll(errMsg){
     stopping = true;
     fileJobActive = false;
-    saveSession(); // asegura que lo transcrito quede en el historial
+    saveSession(true); // asegura que lo transcrito quede en el historial
     if (mode === 'live' && turns.length) downloadTxt(); // respaldo automático al finalizar en vivo
     if (soniox){ try{ soniox.stop(); }catch{} soniox = null; }
     finishRecording();
