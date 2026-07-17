@@ -189,14 +189,23 @@
 <div id="setup">
   <div class="card">
     <h2>Configuración</h2>
-    <p class="sub">Transcripción con identificación de hablantes (Soniox).</p>
+    <p class="sub">Use Soniox o Speechmatics. Cada servicio conserva su propia clave y en ambos la identificación de hablantes permanece activa.</p>
 
     <label for="apiKey">Clave de API de Soniox</label>
-    <input type="password" id="apiKey" placeholder="Pegue aquí su clave de API" autocomplete="off">
+    <input type="password" id="apiKey" placeholder="Pegue aquí su clave de Soniox" autocomplete="off">
     <label class="check" style="margin-top:10px">
       <input type="checkbox" id="rememberKey" checked>
-      <span>Recordar la clave en este navegador
+      <span>Recordar la clave de Soniox
         <small>Se guarda solo en esta computadora, nunca en la página publicada.</small>
+      </span>
+    </label>
+
+    <label for="speechmaticsKey" style="margin-top:22px">Clave de API de Speechmatics</label>
+    <input type="password" id="speechmaticsKey" placeholder="Pegue aquí su clave de Speechmatics" autocomplete="off">
+    <label class="check" style="margin-top:10px">
+      <input type="checkbox" id="rememberSpeechmaticsKey" checked>
+      <span>Recordar la clave de Speechmatics
+        <small>Se guarda solo en esta computadora. Nunca escriba la clave directamente en el código de GitHub.</small>
       </span>
     </label>
 
@@ -218,6 +227,13 @@
   <div class="card">
     <h2>Sesión en vivo</h2>
     <p class="sub">Transcribe la reunión mientras ocurre.</p>
+
+    <label for="liveProvider">Motor para la sesión en vivo</label>
+    <select id="liveProvider">
+      <option value="soniox" selected>Soniox (configuración actual)</option>
+      <option value="speechmatics">Speechmatics Enhanced (prueba comparativa)</option>
+    </select>
+    <small class="field-help">La separación de hablantes está siempre activada. Speechmatics usa sensibilidad reforzada para distinguir voces parecidas.</small>
 
     <label class="check">
       <input type="checkbox" id="srcSystem" checked>
@@ -255,12 +271,18 @@
     <h2>Archivo grabado</h2>
     <p class="sub">Suba un audio (mp3, wav, m4a, ogg…) o un video — se extraerá el audio automáticamente. La identificación de hablantes en este modo es más precisa que en vivo.</p>
 
+    <label for="fileProvider">Motor para el archivo</label>
+    <select id="fileProvider">
+      <option value="speechmatics" selected>Speechmatics Enhanced (recomendado para probar voces)</option>
+      <option value="soniox">Soniox (configuración actual)</option>
+    </select>
+
     <label for="fileInput">Archivo de audio o video</label>
     <input type="file" id="fileInput" accept="audio/*,video/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.webm,.mp4,.mov,.mkv">
 
     <label class="check">
       <input type="checkbox" id="smoothFileSpeakers" checked>
-      <span>Corregir speakers falsos muy breves
+      <span>Corregir speakers falsos muy breves (sólo Soniox)
         <small>Si aparece una voz nueva únicamente durante una frase muy corta entre dos intervenciones de la misma persona, recupera conservadoramente la etiqueta anterior. Puede desactivarlo si hay participantes que solo dicen respuestas muy breves.</small>
       </span>
     </label>
@@ -309,10 +331,17 @@
 
 <script>
   const API_BASE = 'https://api.soniox.com';
+  const SPEECHMATICS_BATCH_BASE = 'https://us1.asr.api.speechmatics.com/v2';
+  const SPEECHMATICS_TEMP_KEY_URL = 'https://mp.speechmatics.com/v1/api_keys?type=rt';
+  const SPEECHMATICS_RT_URL = 'wss://global.rt.speechmatics.com/v2';
   const $ = id => document.getElementById(id);
   const SP_COLORS = ['--sp1','--sp2','--sp3','--sp4','--sp5','--sp6'];
 
   let soniox = null, audioCtx = null;
+  let speechmaticsWs = null, speechmaticsAudioCtx = null;
+  let speechmaticsProcessor = null, speechmaticsSource = null, speechmaticsSilentGain = null;
+  let speechmaticsSeqNo = 0, speechmaticsRecognized = false;
+  let speechmaticsSpeakerMap = new Map();
   let streams = [];              // streams originales para poder detenerlos
   let turns = [];                // [{speaker, originalSpeaker, text, t, endT, parts:[{text,t}]}]
   let interimTurns = null;
@@ -744,6 +773,210 @@
     scheduleSave(); // autoguardado del historial durante la sesión en vivo
   }
 
+  /* ════════════ MODO EN VIVO (Speechmatics Enhanced) ════════════ */
+  const speechmaticsLanguage = () => $('lang').value === 'en' ? 'en' : 'es';
+
+  function speechmaticsSpeakerNumber(raw){
+    const label = raw || 'UU';
+    const direct = /^S(\d+)$/i.exec(label);
+    if (direct) return parseInt(direct[1], 10);
+    if (!speechmaticsSpeakerMap.has(label)){
+      speechmaticsSpeakerMap.set(label, speechmaticsSpeakerMap.size + 1);
+    }
+    return speechmaticsSpeakerMap.get(label);
+  }
+
+  function appendSpeechmaticsResults(target, results){
+    for (const result of (results || [])){
+      if (!result || !Array.isArray(result.alternatives) || !result.alternatives.length) continue;
+      const alternative = result.alternatives[0] || {};
+      let text = alternative.content || '';
+      if (!text) continue;
+      // Speechmatics no incluye los espacios en cada token. Las palabras se
+      // separan aquí y la puntuación se adjunta según la marca del servicio.
+      if (result.type === 'word' || result.type === 'entity') text = ' ' + text;
+      else if (result.attaches_to === 'next') text += ' ';
+      const sp = speechmaticsSpeakerNumber(alternative.speaker);
+      const start = Number.isFinite(result.start_time) ? result.start_time : null;
+      appendTo(target, sp, text, start);
+      const turn = target[target.length - 1];
+      if (turn && Number.isFinite(result.end_time)) turn.endT = result.end_time;
+    }
+  }
+
+  function handleSpeechmaticsMessage(message){
+    if (message.message === 'AddTranscript'){
+      appendSpeechmaticsResults(turns, message.results);
+      interimTurns = null;
+      scheduleRender();
+      scheduleSave();
+    } else if (message.message === 'AddPartialTranscript'){
+      const interim = [];
+      appendSpeechmaticsResults(interim, message.results);
+      interimTurns = interim.length ? interim : null;
+      scheduleRender();
+    } else if (message.message === 'Error'){
+      const detail = message.reason || message.type || 'Speechmatics rechazó la sesión.';
+      if (!stopping) stopAll('Error de Speechmatics: ' + detail);
+    }
+  }
+
+  function toPcm16k(input, inputRate){
+    const targetRate = 16000;
+    const length = Math.max(1, Math.floor(input.length * targetRate / inputRate));
+    const buffer = new ArrayBuffer(length * 2);
+    const view = new DataView(buffer);
+    const ratio = inputRate / targetRate;
+    for (let i=0; i<length; i++){
+      const pos = i * ratio;
+      const left = Math.floor(pos);
+      const right = Math.min(input.length - 1, left + 1);
+      const fraction = pos - left;
+      const sample = Math.max(-1, Math.min(1,
+        input[left] + (input[right] - input[left]) * fraction
+      ));
+      view.setInt16(i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    }
+    return buffer;
+  }
+
+  function startSpeechmaticsAudio(stream, ws){
+    speechmaticsAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    speechmaticsSource = speechmaticsAudioCtx.createMediaStreamSource(stream);
+    speechmaticsProcessor = speechmaticsAudioCtx.createScriptProcessor(4096, 1, 1);
+    speechmaticsSilentGain = speechmaticsAudioCtx.createGain();
+    speechmaticsSilentGain.gain.value = 0;
+    speechmaticsSource.connect(speechmaticsProcessor);
+    speechmaticsProcessor.connect(speechmaticsSilentGain);
+    speechmaticsSilentGain.connect(speechmaticsAudioCtx.destination);
+    speechmaticsProcessor.onaudioprocess = event => {
+      if (!speechmaticsRecognized || paused || ws.readyState !== WebSocket.OPEN) return;
+      const pcm = toPcm16k(event.inputBuffer.getChannelData(0), speechmaticsAudioCtx.sampleRate);
+      ws.send(pcm);
+      speechmaticsSeqNo += 1;
+    };
+    if (speechmaticsAudioCtx.state === 'suspended') speechmaticsAudioCtx.resume();
+  }
+
+  function cleanupSpeechmaticsAudio(){
+    if (speechmaticsProcessor){
+      speechmaticsProcessor.onaudioprocess = null;
+      try { speechmaticsProcessor.disconnect(); } catch {}
+    }
+    try { if (speechmaticsSource) speechmaticsSource.disconnect(); } catch {}
+    try { if (speechmaticsSilentGain) speechmaticsSilentGain.disconnect(); } catch {}
+    try { if (speechmaticsAudioCtx) speechmaticsAudioCtx.close(); } catch {}
+    speechmaticsProcessor = speechmaticsSource = speechmaticsSilentGain = null;
+    speechmaticsAudioCtx = null;
+    speechmaticsRecognized = false;
+  }
+
+  async function createSpeechmaticsRealtimeKey(apiKey){
+    const response = await fetch(SPEECHMATICS_TEMP_KEY_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + apiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ ttl: 60 })
+    });
+    if (!response.ok){
+      let detail = '';
+      try { detail = (await response.json()).detail || ''; } catch {}
+      const error = new Error(detail || `Speechmatics respondió HTTP ${response.status}.`);
+      error.status = response.status;
+      throw error;
+    }
+    const data = await response.json();
+    if (!data.key_value) throw new Error('Speechmatics no devolvió la clave temporal para el modo en vivo.');
+    return data.key_value;
+  }
+
+  async function startSpeechmaticsLive(apiKey, stream){
+    const temporaryKey = await createSpeechmaticsRealtimeKey(apiKey);
+    speechmaticsSpeakerMap = new Map();
+    speechmaticsSeqNo = 0;
+    speechmaticsRecognized = false;
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const ws = new WebSocket(SPEECHMATICS_RT_URL + '?jwt=' + encodeURIComponent(temporaryKey));
+      speechmaticsWs = ws;
+      ws.binaryType = 'arraybuffer';
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try { ws.close(); } catch {}
+        reject(new Error('Speechmatics no respondió en 15 segundos. Revise la conexión o el bloqueo de red.'));
+      }, CONNECT_TIMEOUT_MS);
+
+      ws.onopen = () => {
+        const accuracy = $('liveProfile').value === 'accuracy';
+        ws.send(JSON.stringify({
+          message: 'StartRecognition',
+          audio_format: { type:'raw', encoding:'pcm_s16le', sample_rate:16000 },
+          transcription_config: {
+            language: speechmaticsLanguage(),
+            model: 'enhanced',
+            diarization: 'speaker',
+            speaker_diarization_config: {
+              speaker_sensitivity: 0.62,
+              prefer_current_speaker: false
+            },
+            enable_partials: true,
+            max_delay: accuracy ? 4 : 1.2,
+            max_delay_mode: accuracy ? 'flexible' : 'fixed'
+          }
+        }));
+      };
+      ws.onmessage = event => {
+        let message;
+        try { message = JSON.parse(event.data); } catch { return; }
+        if (message.message === 'RecognitionStarted'){
+          if (!settled){
+            settled = true;
+            clearTimeout(timeout);
+            speechmaticsRecognized = true;
+            startSpeechmaticsAudio(stream, ws);
+            hideErr();
+            setStatus('en vivo · Speechmatics', 'live');
+            showView('live');
+            paused = false;
+            $('btnPause').textContent = 'Pausar';
+            $('btnPause').style.display = 'inline-block';
+            $('procNote').style.display = 'none';
+            t0 = Date.now();
+            timerIv = setInterval(() => { $('timer').textContent = fmtClock((Date.now()-t0)/1000); }, 1000);
+            resolve();
+          }
+          return;
+        }
+        if (message.message === 'Error' && !settled){
+          settled = true;
+          clearTimeout(timeout);
+          reject(new Error(message.reason || message.type || 'Speechmatics rechazó la conexión.'));
+          return;
+        }
+        handleSpeechmaticsMessage(message);
+      };
+      ws.onerror = () => {
+        if (!settled){
+          settled = true;
+          clearTimeout(timeout);
+          reject(new Error('No fue posible abrir la conexión en vivo con Speechmatics.'));
+        }
+      };
+      ws.onclose = event => {
+        clearTimeout(timeout);
+        if (speechmaticsWs === ws) speechmaticsWs = null;
+        cleanupSpeechmaticsAudio();
+        if (!stopping && settled && event.code !== 1000){
+          stopAll('Speechmatics cerró la sesión en vivo. Código: ' + event.code + '.');
+        }
+      };
+    });
+  }
+
   /* ════════════ MODO ARCHIVO (Soniox asíncrono) ════════════ */
   async function api(path, opts, key){
     const res = await fetch(API_BASE + path, {
@@ -836,19 +1069,20 @@
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-  async function transcribeFile(){
+  async function transcribeSonioxFile(){
     hideErr();
     const key = $('apiKey').value.trim();
     const f = $('fileInput').files[0];
     if (!key) return showErr('Ingrese su clave de API de Soniox.');
     if (!f) return showErr('Seleccione un archivo de audio o video.');
-    persistKey(key);
+    persistSonioxKey(key);
 
     mode = 'file'; fileJobActive = true; stopping = false;
     $('btnFile').disabled = true;
     $('btnAttach').style.display = 'none';
     resetTranscript();
     newSession('file', f.name);
+    currentSession.provider = 'soniox';
     showView('live');
     const note = txt => { const n=$('procNote'); n.style.display='block'; n.textContent = txt; };
     setStatus('procesando', 'busy');
@@ -931,6 +1165,138 @@
       try { if (trId)   await api('/v1/transcriptions/' + trId, {method:'DELETE'}, key); } catch {}
       try { if (fileId) await api('/v1/files/' + fileId, {method:'DELETE'}, key); } catch {}
     }
+  }
+
+  /* ════════════ MODO ARCHIVO (Speechmatics Enhanced) ════════════ */
+  async function speechmaticsApi(path, opts, key){
+    const response = await fetch(SPEECHMATICS_BATCH_BASE + path, {
+      ...opts,
+      headers: { 'Authorization': 'Bearer ' + key, ...(opts && opts.headers || {}) }
+    });
+    if (!response.ok){
+      let detail = '';
+      try {
+        const data = await response.json();
+        detail = data.detail || data.message || data.error || JSON.stringify(data);
+      } catch { detail = await response.text().catch(() => ''); }
+      const error = new Error(`HTTP ${response.status}: ${detail}`);
+      error.status = response.status;
+      throw error;
+    }
+    return opts && opts.method === 'DELETE' ? null : response.json();
+  }
+
+  function loadSpeechmaticsTranscript(transcript){
+    speechmaticsSpeakerMap = new Map();
+    for (const result of (transcript && transcript.results || [])){
+      if (!result || !Array.isArray(result.alternatives) || !result.alternatives.length) continue;
+      const alternative = result.alternatives[0] || {};
+      let text = alternative.content || '';
+      if (!text) continue;
+      if (result.type === 'word' || result.type === 'entity') text = ' ' + text;
+      else if (result.attaches_to === 'next') text += ' ';
+      const sp = speechmaticsSpeakerNumber(alternative.speaker);
+      const start = Number.isFinite(result.start_time) ? result.start_time : null;
+      appendTo(turns, sp, text, start);
+      const turn = turns[turns.length - 1];
+      if (turn && Number.isFinite(result.end_time)) turn.endT = result.end_time;
+    }
+  }
+
+  async function transcribeSpeechmaticsFile(){
+    hideErr();
+    const key = $('speechmaticsKey').value.trim();
+    const file = $('fileInput').files[0];
+    if (!key) return showErr('Ingrese su clave de API de Speechmatics.');
+    if (!file) return showErr('Seleccione un archivo de audio o video.');
+    persistSpeechmaticsKey(key);
+
+    mode = 'file'; fileJobActive = true; stopping = false;
+    $('btnFile').disabled = true;
+    $('btnAttach').style.display = 'none';
+    resetTranscript();
+    newSession('file', file.name);
+    currentSession.provider = 'speechmatics';
+    showView('live');
+    const note = text => {
+      const element = $('procNote');
+      element.style.display = 'block';
+      element.textContent = text;
+    };
+    setStatus('procesando · Speechmatics', 'busy');
+    $('timer').textContent = '';
+    let jobId = null;
+
+    try {
+      let blob = file, name = file.name;
+      if (isVideo(file) && !isSonioxNativeFile(file)){
+        blob = await extractWav(file, note);
+        name = 'audio.wav';
+      }
+      setAudioSource(blob);
+
+      note('subiendo a Speechmatics…');
+      const form = new FormData();
+      form.append('data_file', blob, name);
+      form.append('config', JSON.stringify({
+        type: 'transcription',
+        transcription_config: {
+          language: speechmaticsLanguage(),
+          model: 'enhanced',
+          diarization: 'speaker',
+          speaker_diarization_config: { speaker_sensitivity: 0.62 }
+        }
+      }));
+      const created = await speechmaticsApi('/jobs', { method:'POST', body:form }, key);
+      jobId = created.id || created.job && created.job.id;
+      if (!jobId) throw new Error('Speechmatics no devolvió el identificador del trabajo.');
+
+      let waited = 0;
+      while (fileJobActive){
+        const details = await speechmaticsApi('/jobs/' + jobId, {}, key);
+        const job = details.job || details;
+        if (job.status === 'done') break;
+        if (job.status === 'rejected'){
+          const reason = job.errors && job.errors.length
+            ? job.errors.map(error => error.message || error).join('; ')
+            : 'Speechmatics rechazó el archivo.';
+          throw new Error(reason);
+        }
+        note(`Speechmatics Enhanced está transcribiendo y separando voces… ${fmtClock(waited)}`);
+        await sleep(3000);
+        waited += 3;
+      }
+      if (!fileJobActive) return;
+
+      const transcript = await speechmaticsApi('/jobs/' + jobId + '/transcript?format=json-v2', {}, key);
+      loadSpeechmaticsTranscript(transcript);
+      if (!turns.length && transcript && transcript.metadata && transcript.metadata.transcript){
+        appendTo(turns, 1, transcript.metadata.transcript, 0);
+      }
+      render();
+      $('procNote').style.display = 'none';
+      const speakers = new Set(turns.map(turn => turn.speaker)).size;
+      setStatus(`completado · Speechmatics · ${speakers} speaker${speakers===1?'':'s'}`, '');
+      saveSession(true);
+    } catch (error){
+      showView('setup');
+      setStatus('inactivo', '');
+      const message = String(error.message || error);
+      showErr(error.status === 401 || error.status === 403
+        ? 'Speechmatics rechazó la clave o la cuenta no tiene acceso al modelo Enhanced.'
+        : (message.includes('Failed to fetch')
+          ? 'No fue posible contactar la API de Speechmatics desde esta red. La página puede abrir en GitHub y aun así la empresa puede bloquear el dominio de la API.'
+          : ('Error de Speechmatics: ' + message)));
+    } finally {
+      fileJobActive = false;
+      $('btnFile').disabled = false;
+      try { if (jobId) await speechmaticsApi('/jobs/' + jobId, {method:'DELETE'}, key); } catch {}
+    }
+  }
+
+  async function transcribeFile(){
+    if ($('fileProvider').value === 'speechmatics') return transcribeSpeechmaticsFile();
+    return transcribeSonioxFile();
   }
 
   /* ════════════ TURNOS Y RENDER ════════════ */
@@ -1199,14 +1565,17 @@
     if (spMenuEl && !spMenuEl.contains(e.target) && !e.target.closest('.reassign')) closeSpMenu();
   });
 
-  /* ════════════ RESTABLECER ETIQUETAS DE SONIOX ════════════ */
+  /* ════════════ RESTABLECER ETIQUETAS DEL MOTOR ════════════ */
   function resetSpeakerLabels(){
     if (!turns.length) return;
     const changed = Object.keys(speakerNames).length > 0 || turns.some(t =>
       t.originalSpeaker != null && t.speaker !== t.originalSpeaker
     );
     if (!changed) return;
-    if (!confirm('¿Restablecer los hablantes como los identificó Soniox? Se eliminarán los nombres y las reasignaciones manuales.')) return;
+    const engine = currentSession && currentSession.provider === 'speechmatics'
+      ? 'Speechmatics'
+      : (currentSession && currentSession.provider === 'soniox' ? 'Soniox' : 'el motor de transcripción');
+    if (!confirm(`¿Restablecer los hablantes como los identificó ${engine}? Se eliminarán los nombres y las reasignaciones manuales.`)) return;
 
     speakerNames = {};
     turns.forEach(t => {
@@ -1392,24 +1761,32 @@
   /* ════════════ CICLO DE VIDA ════════════ */
   async function startLiveClick(){
     hideErr();
-    const key = $('apiKey').value.trim();
+    const provider = $('liveProvider').value;
+    const key = provider === 'speechmatics'
+      ? $('speechmaticsKey').value.trim()
+      : $('apiKey').value.trim();
     const useSystem = $('srcSystem').checked;
     const useMic = $('srcMic').checked;
     const useMyMic = $('srcMyMic').checked;
-    if (!key) return showErr('Ingrese su clave de API de Soniox.');
+    if (!key) return showErr(provider === 'speechmatics'
+      ? 'Ingrese su clave de API de Speechmatics.'
+      : 'Ingrese su clave de API de Soniox.');
     if (!useSystem && !useMic && !useMyMic) return showErr('Seleccione al menos una fuente de audio.');
-    persistKey(key);
+    if (provider === 'speechmatics') persistSpeechmaticsKey(key);
+    else persistSonioxKey(key);
     mode = 'live'; stopping = false;
     startKeepAwake(); // dentro del clic, para que el navegador permita el audio
     resetTranscript();
     newSession('live', 'Sesión ' + fechaMX(new Date().toISOString()).replace(/[/:]/g, '-'));
+    currentSession.provider = provider;
     $('btnAttach').style.display = 'none';
     $('btnStart').disabled = true;
     setStatus('conectando…', '');
     try {
       const stream = await getMixedStream(useSystem, useMic, useMyMic);
       startRecording(stream);
-      await startLive(key, $('lang').value.split(','), stream);
+      if (provider === 'speechmatics') await startSpeechmaticsLive(key, stream);
+      else await startLive(key, $('lang').value.split(','), stream);
     } catch (e){
       cleanupMedia();
       setStatus('inactivo', '');
@@ -1423,6 +1800,7 @@
 
   function cleanupMedia(){
     stopKeepAwake();
+    cleanupSpeechmaticsAudio();
     streams.forEach(s => s.getTracks().forEach(t => t.stop()));
     streams = [];
     if (audioCtx){ try{audioCtx.close();}catch{} audioCtx = null; }
@@ -1504,6 +1882,16 @@
     saveSession(true); // asegura que lo transcrito quede en el historial
     if (mode === 'live' && turns.length) downloadTxt(); // respaldo automático al finalizar en vivo
     if (soniox){ try{ soniox.stop(); }catch{} soniox = null; }
+    if (speechmaticsWs){
+      const ws = speechmaticsWs;
+      speechmaticsWs = null;
+      try {
+        if (ws.readyState === WebSocket.OPEN){
+          ws.send(JSON.stringify({ message:'EndOfStream', last_seq_no:speechmaticsSeqNo }));
+        }
+      } catch {}
+      try { ws.close(1000, 'session stopped'); } catch {}
+    }
     finishRecording();
     cleanupMedia();
     paused = false;
@@ -1521,16 +1909,25 @@
 
   $('err').addEventListener('click', () => hideErr());
 
-  /* ════════════ CLAVE DE API RECORDADA (solo en este navegador) ════════════ */
+  /* ════════════ CLAVES DE API RECORDADAS (solo en este navegador) ════════════ */
   const KEY_STORE = 'sonioxKey';
+  const SPEECHMATICS_KEY_STORE = 'speechmaticsKey';
   try {
     const saved = localStorage.getItem(KEY_STORE);
     if (saved) $('apiKey').value = saved;
+    const savedSpeechmatics = localStorage.getItem(SPEECHMATICS_KEY_STORE);
+    if (savedSpeechmatics) $('speechmaticsKey').value = savedSpeechmatics;
   } catch {}
-  function persistKey(key){
+  function persistSonioxKey(key){
     try {
       if ($('rememberKey').checked) localStorage.setItem(KEY_STORE, key);
       else localStorage.removeItem(KEY_STORE);
+    } catch {}
+  }
+  function persistSpeechmaticsKey(key){
+    try {
+      if ($('rememberSpeechmaticsKey').checked) localStorage.setItem(SPEECHMATICS_KEY_STORE, key);
+      else localStorage.removeItem(SPEECHMATICS_KEY_STORE);
     } catch {}
   }
 
