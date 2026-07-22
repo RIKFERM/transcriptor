@@ -1,0 +1,2062 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Transcriptor de sesiones</title>
+<style>
+  :root{
+    --bg:#14181f;
+    --panel:#1c222c;
+    --panel-2:#232b37;
+    --line:#2e3846;
+    --text:#e8e6e1;
+    --muted:#8b95a5;
+    --accent:#ffb454;
+    --danger:#ff6b6b;
+    --ok:#7ed491;
+    --sp1:#5ea8ff; --sp2:#ffb454; --sp3:#7ed491;
+    --sp4:#e585c0; --sp5:#b69cff; --sp6:#5fd4c9;
+    --radius:10px;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--bg);color:var(--text);
+    font:15px/1.55 -apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    height:100vh;display:flex;flex-direction:column;
+  }
+  header{
+    display:flex;align-items:center;gap:14px;
+    padding:12px 20px;border-bottom:1px solid var(--line);
+    background:var(--panel);flex-wrap:wrap;
+  }
+  header h1{font-size:15px;font-weight:600;letter-spacing:.02em}
+  #sessTitle{
+    font-size:12.5px;color:var(--muted);font-family:var(--mono);cursor:pointer;
+    border-bottom:1px dashed transparent;max-width:38vw;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  #sessTitle:hover{border-bottom-color:var(--muted);color:var(--text)}
+  .status{
+    display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);
+    font-family:var(--mono);
+  }
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
+  .dot.live{background:var(--danger);animation:pulse 1.4s infinite}
+  .dot.busy{background:var(--accent);animation:pulse 1.4s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .spacer{flex:1}
+  .timer{font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+
+  /* Panel de configuración */
+  #setup{max-width:600px;margin:36px auto;padding:0 20px 40px;width:100%;overflow-y:auto}
+  .card{
+    background:var(--panel);border:1px solid var(--line);
+    border-radius:var(--radius);padding:24px 26px;margin-bottom:18px;
+  }
+  .card h2{font-size:16px;margin-bottom:4px}
+  .card p.sub{color:var(--muted);font-size:13.5px;margin-bottom:14px}
+  label{display:block;font-size:12.5px;color:var(--muted);margin:14px 0 6px;letter-spacing:.03em}
+  input[type=password],input[type=file],select{
+    width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--line);
+    background:var(--bg);color:var(--text);font-size:14px;outline:none;
+  }
+  input[type=file]{padding:8px 12px}
+  input[type=file]::file-selector-button{
+    border:1px solid var(--line);border-radius:6px;background:var(--panel-2);
+    color:var(--text);padding:6px 12px;margin-right:10px;cursor:pointer;font-size:13px;
+  }
+  input:focus,select:focus{border-color:var(--accent)}
+  .field-help{display:block;color:var(--muted);font-size:12.5px;margin-top:6px}
+  .check{display:flex;align-items:flex-start;gap:10px;margin-top:12px;cursor:pointer}
+  .check input{margin-top:3px;accent-color:var(--accent)}
+  .check span{font-size:14px;color:var(--text)}
+  .check small{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
+  .hint{
+    margin-top:16px;padding:12px 14px;border-left:3px solid var(--accent);
+    background:var(--panel-2);border-radius:0 8px 8px 0;
+    font-size:13px;color:var(--muted);
+  }
+  .hint b{color:var(--text);font-weight:600}
+
+  .hist-item{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+  .hist-item:last-child{border-bottom:none}
+  .hist-meta{flex:1;min-width:0}
+  .hist-meta .t1{font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .hist-meta .t2{color:var(--muted);font-size:11.5px;font-family:var(--mono);margin-top:2px}
+  .hist-item button{padding:6px 10px;font-size:12.5px}
+  #histEmpty{color:var(--muted);font-size:13px}
+
+  button{
+    border:1px solid var(--line);border-radius:8px;padding:10px 18px;
+    font-size:14px;font-weight:600;cursor:pointer;
+    background:var(--panel-2);color:var(--text);transition:background .15s;
+  }
+  button:hover{background:#2a3442}
+  button.primary{background:var(--accent);color:#1a1408;border-color:transparent}
+  button.primary:hover{background:#ffc57a}
+  button.chatgpt{background:#10a37f;color:#fff;border-color:transparent}
+  button.chatgpt:hover{background:#0d8f70}
+  button.danger{background:transparent;color:var(--danger);border-color:var(--danger)}
+  button.danger:hover{background:rgba(255,107,107,.12)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .fullbtn{width:100%;margin-top:18px;padding:12px}
+
+  #err{
+    display:none;position:fixed;bottom:74px;left:50%;transform:translateX(-50%);
+    z-index:99;max-width:640px;width:calc(100% - 40px);
+    padding:12px 16px;border-radius:8px;cursor:pointer;
+    background:#3a2126;border:1px solid rgba(255,107,107,.55);
+    color:#ffc4c4;font-size:13px;box-shadow:0 6px 24px rgba(0,0,0,.45);
+  }
+
+  /* Vista de transcripción */
+  #live{display:none;flex:1;flex-direction:column;overflow:hidden}
+  #procNote{
+    display:none;text-align:center;color:var(--muted);font-size:13px;
+    padding:10px;border-bottom:1px solid var(--line);font-family:var(--mono);
+  }
+  #procNote.recovery{color:var(--accent);background:rgba(255,180,84,.08)}
+  #procNote.recovered{color:var(--ok);background:rgba(126,212,145,.08)}
+  #procNote.capture-lost{color:#ffc4c4;background:rgba(255,107,107,.09)}
+  #transcript{
+    flex:1;overflow-y:auto;padding:22px 20px 30px;
+    max-width:860px;width:100%;margin:0 auto;
+  }
+  .turn{display:flex;gap:14px;margin-bottom:14px}
+  .rail{width:3px;border-radius:2px;flex:none}
+  .turn .body{flex:1;min-width:0}
+  .turn .who{
+    font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;
+    margin-bottom:3px;display:flex;gap:10px;align-items:baseline;
+  }
+  .turn .who .name{cursor:pointer;border-bottom:1px dashed transparent}
+  .turn .who .name:hover{border-bottom-color:currentColor}
+  .speaker-edit{
+    width:180px;max-width:45vw;padding:3px 7px;border:1px solid var(--accent);
+    border-radius:5px;background:var(--panel);color:var(--text);font:inherit;
+  }
+  .render-limit-note{
+    color:var(--muted);font:12px/1.4 var(--mono);text-align:center;
+    padding:8px 10px;margin-bottom:14px;border:1px solid var(--line);border-radius:7px;
+  }
+  .turn .who .ts{color:var(--muted);letter-spacing:0}
+  .turn .who .play{
+    border:none;background:transparent;color:var(--muted);cursor:pointer;
+    font-size:11px;padding:0 3px;line-height:1;
+  }
+  .turn .who .play:hover{color:var(--text);background:transparent}
+  .turn .who .reassign{
+    border:none;background:transparent;color:var(--muted);cursor:pointer;
+    font-size:11px;padding:0 3px;line-height:1;opacity:0;transition:opacity .15s;
+  }
+  .turn:hover .who .reassign{opacity:1}
+  .turn .who .reassign:hover{color:var(--text);background:transparent}
+  .sp-menu{
+    position:fixed;z-index:120;min-width:200px;max-width:280px;
+    background:var(--panel-2);border:1px solid var(--line);border-radius:8px;
+    box-shadow:0 8px 28px rgba(0,0,0,.5);padding:4px;display:flex;flex-direction:column;
+  }
+  .sp-menu button{
+    border:none;background:transparent;text-align:left;padding:8px 10px;
+    font-size:13px;font-weight:400;border-radius:6px;
+  }
+  .sp-menu button:hover{background:#324054}
+  .turn.playing{background:rgba(255,255,255,.04);border-radius:6px}
+  .turn .txt{font-size:15px;white-space:pre-wrap;word-wrap:break-word}
+  .turn.interim{opacity:.55}
+  .turn.interim .txt{font-style:italic}
+  #empty{color:var(--muted);text-align:center;margin-top:70px;font-size:14px}
+  footer{
+    display:flex;gap:10px;padding:12px 20px;border-top:1px solid var(--line);
+    background:var(--panel);flex-wrap:wrap;align-items:center;
+  }
+  #footNote{font-size:12px;color:var(--muted)}
+  #copyMsg{font-size:12.5px;color:var(--ok);opacity:0;transition:opacity .3s}
+  #copyMsg.show{opacity:1}
+  @media (prefers-reduced-motion:reduce){.dot.live,.dot.busy{animation:none}}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Transcriptor de sesiones</h1>
+  <span id="sessTitle" title="Clic para renombrar la sesión"></span>
+  <div class="status"><span class="dot" id="dot"></span><span id="statusTxt">inactivo</span></div>
+  <div class="spacer"></div>
+  <div class="timer" id="timer"></div>
+</header>
+
+<!-- ══════════ CONFIGURACIÓN ══════════ -->
+<div id="setup">
+  <div class="card">
+    <h2>Configuración</h2>
+    <p class="sub">Transcripción con identificación de hablantes (Soniox).</p>
+
+    <label for="apiKey">Clave de API de Soniox</label>
+    <input type="password" id="apiKey" placeholder="Pegue aquí su clave de API" autocomplete="off">
+    <label class="check" style="margin-top:10px">
+      <input type="checkbox" id="rememberKey" checked>
+      <span>Recordar la clave en este navegador
+        <small>Se guarda solo en esta computadora, nunca en la página publicada.</small>
+      </span>
+    </label>
+
+    <label for="lang">Idioma del audio</label>
+    <select id="lang">
+      <option value="es" selected>Español</option>
+      <option value="es,en">Mixto (español / inglés)</option>
+      <option value="en">Inglés</option>
+    </select>
+
+    <label for="liveProfile">Prioridad de la transcripción en vivo</label>
+    <select id="liveProfile">
+      <option value="accuracy" selected>Mayor precisión de hablantes (recomendado)</option>
+      <option value="fast">Respuesta más rápida</option>
+    </select>
+    <small class="field-help" id="liveProfileHelp">Muestra el texto provisional al momento y confirma la voz cuando el modelo tiene más contexto.</small>
+  </div>
+
+  <div class="card">
+    <h2>Sesión en vivo</h2>
+    <p class="sub">Transcribe la reunión mientras ocurre.</p>
+
+    <label class="check">
+      <input type="checkbox" id="srcSystem" checked>
+      <span>Audio del sistema (reunión virtual)
+        <small>Se le pedirá compartir una pestaña o pantalla — active la casilla «Compartir audio» en el diálogo del navegador.</small>
+      </span>
+    </label>
+    <label class="check">
+      <input type="checkbox" id="srcMic">
+      <span>Micrófono / entrada de audio
+        <small>Incluye su propia voz — o seleccione un dispositivo virtual (p. ej. BlackHole en Mac) para capturar todo el audio del sistema.</small>
+      </span>
+    </label>
+    <select id="micDevice" style="display:none;margin-top:8px"></select>
+
+    <label class="check">
+      <input type="checkbox" id="srcMyMic">
+      <span>Mi micrófono
+        <small>Su propia voz en la reunión. Con bocinas, la cancelación de eco evita que se duplique el audio; con audífonos queda aún más limpio.</small>
+      </span>
+    </label>
+    <select id="myMicDevice" style="display:none;margin-top:8px"></select>
+
+    <div class="hint">
+      <b>Recomendado:</b> elija la <b>pestaña</b> del navegador donde corre la reunión (Meet, Teams web, Zoom web) y marque «Compartir audio». <b>En Windows</b> también puede elegir «Pantalla completa» y marcar «Compartir audio del sistema». <b>En Mac</b> el sistema no permite capturar el audio de toda la laptop al compartir pantalla: para eso, instale BlackHole (gratuito) y selecciónelo como entrada en la opción de micrófono de arriba.
+    </div>
+    <div class="hint">
+      <b>Para evitar voces duplicadas:</b> use «Audio del sistema» + «Mi micrófono». No active además una entrada virtual que ya contenga el mismo audio de la reunión. Con audífonos, la separación suele ser más limpia.
+    </div>
+
+    <button class="primary fullbtn" id="btnStart">Iniciar transcripción en vivo</button>
+  </div>
+
+  <div class="card">
+    <h2>Archivo grabado</h2>
+    <p class="sub">Suba un audio (mp3, wav, m4a, ogg…) o un video — se extraerá el audio automáticamente. La identificación de hablantes en este modo es más precisa que en vivo.</p>
+
+    <label for="fileInput">Archivo de audio o video</label>
+    <input type="file" id="fileInput" accept="audio/*,video/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.webm,.mp4,.mov,.mkv">
+
+    <label class="check">
+      <input type="checkbox" id="smoothFileSpeakers" checked>
+      <span>Corregir speakers falsos muy breves
+        <small>Si aparece una voz nueva únicamente durante una frase muy corta entre dos intervenciones de la misma persona, recupera conservadoramente la etiqueta anterior. Puede desactivarlo si hay participantes que solo dicen respuestas muy breves.</small>
+      </span>
+    </label>
+
+    <button class="primary fullbtn" id="btnFile">Transcribir archivo</button>
+  </div>
+
+  <div class="card">
+    <h2 style="display:flex;align-items:center;gap:12px">Historial
+      <span id="histCount" style="font-size:12px;color:var(--muted);font-weight:400;font-family:var(--mono)"></span>
+      <span class="spacer"></span>
+      <button id="histClearAll" class="danger" style="padding:6px 10px;font-size:12.5px">Borrar todo</button>
+    </h2>
+    <p class="sub">Transcripciones guardadas en este navegador. Las sesiones en vivo se guardan automáticamente mientras transcurren. Al llegar al límite, la más antigua se elimina para dar lugar a la nueva. Descargue el .txt de lo importante: el historial se pierde si limpia los datos del navegador.</p>
+    <div id="histList"><div id="histEmpty">Aún no hay transcripciones guardadas.</div></div>
+  </div>
+</div>
+
+<!-- ══════════ TRANSCRIPCIÓN ══════════ -->
+<div id="live">
+  <div id="procNote"></div>
+  <div id="transcript">
+    <div id="empty">La transcripción aparecerá aquí.</div>
+  </div>
+  <footer>
+    <button id="btnCopy">Copiar todo</button>
+    <button class="primary" id="btnCopyAI" title="Copia una ventana que termina en el momento del clic">Copiar últimos 3 min para IA</button>
+    <button class="chatgpt" id="btnSendAllChatGPT" title="Requiere la extensión privada y un chat vinculado">Enviar todo a ChatGPT</button>
+    <button class="chatgpt" id="btnSendAIChatGPT" title="Requiere la extensión privada y un chat vinculado">Enviar 3 min a ChatGPT</button>
+    <button id="btnDownload">Descargar .txt</button>
+    <button id="btnAudio" style="display:none">Descargar audio</button>
+    <button id="btnResetSpeakers" title="Quitar nombres y deshacer reasignaciones manuales">Restablecer etiquetas</button>
+    <button id="btnClear">Limpiar</button>
+    <button id="btnNew">Nueva transcripción</button>
+    <button id="btnAttach" style="display:none">Cargar audio para escuchar</button>
+    <input type="file" id="attachInput" accept="audio/*,video/*" style="display:none">
+    <span id="footNote">Texto tenue = en proceso · la voz se confirma después · clic en «Speaker N» para asignarle nombre.</span>
+    <div class="spacer"></div>
+    <span id="copyMsg">Copiado al portapapeles</span>
+    <button class="primary" id="btnRecoverAudio" style="display:none">Volver a compartir audio</button>
+    <button id="btnPause" style="display:none">Pausar</button>
+    <button class="danger" id="btnStop" style="display:none">Detener</button>
+  </footer>
+</div>
+
+<div id="err"></div>
+
+<script>
+  const API_BASE = 'https://api.soniox.com';
+  const $ = id => document.getElementById(id);
+  const SP_COLORS = ['--sp1','--sp2','--sp3','--sp4','--sp5','--sp6'];
+
+  let soniox = null, audioCtx = null;
+  let streams = [];              // streams originales para poder detenerlos
+  let turns = [];                // [{speaker, originalSpeaker, text, t, endT, parts:[{text,t}]}]
+  let interimTurns = null;
+  let speakerNames = {};         // {1:"Ricardo", 2:"Cliente"...}
+  let timerIv = null, t0 = null;
+  let lastSpeaker = 1;
+  let mode = null;               // 'live' | 'file' | 'history'
+  let audioURL = null, audioEl = null, playingIdx = null, stopAt = null;
+  let db = null, currentSession = null, saveTimer = null, saveInterval = null;
+  let recRecorder = null, recChunks = [], recBlob = null;
+  let recSeq = 0, recSessionId = null, recWriteChain = Promise.resolve();
+  let recStopPromise = Promise.resolve(), resolveRecStop = null;
+  const MAX_HIST = 30;   // límite de transcripciones en el historial (ajustable)
+  let stopping = false, fileJobActive = false;
+  let activeLiveProfile = 'accuracy';
+
+  // Estado de recuperación del modo en vivo. La captura original y la
+  // grabación local permanecen activas mientras Soniox se reconecta.
+  let SonioxClientCtor = null;
+  let liveStream = null, liveApiKey = '', liveLangs = [];
+  let liveSessionStartedAt = 0, liveHasConnected = false;
+  let liveConnectionId = 0, reconnectAttempt = 0;
+  let reconnectTimer = null, reconnecting = false, reconnectRequested = false, recoveryStartedAt = null;
+  let activeConnectionAbort = null;
+  let liveRunId = 0, captureGeneration = 0;
+  let captureLost = false, captureTransition = false;
+  let liveSourceSelection = null;
+  const RECONNECT_DELAYS_MS = [0, 1000, 2000, 4000, 8000, 15000];
+
+  const LIVE_PROFILE_HELP = {
+    accuracy: 'Muestra el texto provisional al momento y confirma la voz cuando el modelo tiene más contexto.',
+    fast: 'Muestra texto provisional y cierra las intervenciones automáticamente; puede confundir más las voces.'
+  };
+
+  $('liveProfile').addEventListener('change', e => {
+    $('liveProfileHelp').textContent = LIVE_PROFILE_HELP[e.target.value] || '';
+  });
+
+  const setStatus = (txt, cls) => {
+    $('statusTxt').textContent = txt;
+    $('dot').className = 'dot' + (cls ? ' '+cls : '');
+  };
+  let errTimer = null;
+  const showErr = (msg, persistent=false) => {
+    const e = $('err');
+    e.textContent = msg + '  ✕';
+    e.style.display = 'block';
+    clearTimeout(errTimer);
+    if (!persistent) errTimer = setTimeout(hideErr, 10000); // también se puede cerrar con un clic
+  };
+  const hideErr = () => { clearTimeout(errTimer); $('err').style.display = 'none'; };
+  const showView = v => {
+    $('setup').style.display = v==='setup' ? 'block' : 'none';
+    $('live').style.display  = v==='live'  ? 'flex'  : 'none';
+  };
+
+  const fmtClock = s => {
+    s = Math.max(0, Math.floor(s));
+    const h = String(Math.floor(s/3600)).padStart(2,'0');
+    const m = String(Math.floor(s%3600/60)).padStart(2,'0');
+    const ss = String(s%60).padStart(2,'0');
+    return (h==='00' ? '' : h+':') + m + ':' + ss;
+  };
+  const resetTranscript = () => { clearAudio(); recChunks=[]; recBlob=null; $('btnAudio').style.display='none'; turns=[]; interimTurns=null; speakerNames={}; lastSpeaker=1; render(); };
+
+  /* ════════════ HISTORIAL (IndexedDB) ════════════ */
+  function openDB(){
+    return new Promise((res, rej) => {
+      if (!window.indexedDB) return rej(new Error('no-idb'));
+      const r = indexedDB.open('transcriptor', 2);
+      r.onupgradeneeded = () => {
+        if (!r.result.objectStoreNames.contains('sesiones')){
+          r.result.createObjectStore('sesiones', { keyPath: 'id' });
+        }
+        if (!r.result.objectStoreNames.contains('audioChunks')){
+          const store = r.result.createObjectStore('audioChunks', { keyPath: 'key' });
+          store.createIndex('sessionId', 'sessionId', { unique: false });
+        }
+      };
+      r.onsuccess = () => { db = r.result; res(db); };
+      r.onerror = () => rej(r.error);
+    });
+  }
+  const dbTx = (m) => db.transaction('sesiones', m).objectStore('sesiones');
+  const dbPut = s => new Promise((res,rej)=>{ const q=dbTx('readwrite').put(s); q.onsuccess=()=>res(); q.onerror=()=>rej(q.error); });
+  const dbAll = () => new Promise((res,rej)=>{ const q=dbTx('readonly').getAll(); q.onsuccess=()=>res(q.result||[]); q.onerror=()=>rej(q.error); });
+  const dbDelete = id => new Promise((res,rej)=>{ const q=dbTx('readwrite').delete(id); q.onsuccess=()=>res(); q.onerror=()=>rej(q.error); });
+  const audioChunkPut = item => new Promise((res,rej)=>{
+    if (!db || !db.objectStoreNames.contains('audioChunks')) return rej(new Error('no-audio-store'));
+    const q = db.transaction('audioChunks','readwrite').objectStore('audioChunks').put(item);
+    q.onsuccess=()=>res(); q.onerror=()=>rej(q.error);
+  });
+  const audioChunksFor = sessionId => new Promise((res,rej)=>{
+    if (!db || !db.objectStoreNames.contains('audioChunks')) return res([]);
+    const store = db.transaction('audioChunks','readonly').objectStore('audioChunks');
+    const q = store.index('sessionId').getAll(sessionId);
+    q.onsuccess=()=>res((q.result||[]).sort((a,b)=>a.seq-b.seq));
+    q.onerror=()=>rej(q.error);
+  });
+  const deleteAudioChunksFor = sessionId => new Promise((res,rej)=>{
+    if (!db || !db.objectStoreNames.contains('audioChunks')) return res();
+    const tx = db.transaction('audioChunks','readwrite');
+    const idx = tx.objectStore('audioChunks').index('sessionId');
+    const q = idx.openKeyCursor(IDBKeyRange.only(sessionId));
+    q.onsuccess = () => {
+      const cursor = q.result;
+      if (!cursor) return;
+      tx.objectStore('audioChunks').delete(cursor.primaryKey);
+      cursor.continue();
+    };
+    tx.oncomplete=()=>res(); tx.onerror=()=>rej(tx.error);
+  });
+
+  function newSession(m, titulo){
+    currentSession = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2,7),
+      fecha: new Date().toISOString(),
+      mode: m, titulo,
+      turns: [], speakerNames: {}
+    };
+    refreshTitle();
+  }
+
+  // Fecha/hora en zona horaria de Ciudad de México
+  const fechaMX = iso => new Date(iso).toLocaleString('es-MX', {
+    timeZone: 'America/Mexico_City',
+    year:'numeric', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit', hour12:false
+  }).replace(',', '');
+
+  // Nombre de archivo seguro: quita la extensión original y caracteres inválidos
+  const safeName = n => (n||'')
+    .replace(/\.[a-z0-9]{2,5}$/i, '')
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .trim();
+
+  function refreshTitle(){
+    $('sessTitle').textContent = currentSession ? (currentSession.titulo || '') : '';
+  }
+
+  $('sessTitle').addEventListener('click', () => {
+    if (!currentSession) return;
+    const nuevo = prompt('Nombre de la sesión:', currentSession.titulo || '');
+    if (nuevo === null) return;
+    const limpio = nuevo.trim();
+    if (!limpio) return;
+    currentSession.titulo = limpio;
+    refreshTitle();
+    saveSession();
+  });
+
+  function saveSession(refreshList=false){
+    if (!db || !currentSession || !turns.length) return;
+    currentSession.turns = turns;
+    currentSession.speakerNames = speakerNames;
+    currentSession.updated = new Date().toISOString();
+    const write = dbPut(currentSession);
+    if (refreshList) write.then(pruneHistory).then(renderHistory).catch(()=>{});
+    else write.catch(()=>{});
+  }
+
+  // Si el historial excede el límite, elimina las transcripciones más antiguas
+  async function pruneHistory(){
+    let items = await dbAll();
+    if (items.length <= MAX_HIST) return;
+    items.sort((a,b) => (a.fecha||'').localeCompare(b.fecha||'')); // más antiguas primero
+    for (const s of items.slice(0, items.length - MAX_HIST)){
+      if (currentSession && s.id === currentSession.id) continue;
+      try { await dbDelete(s.id); } catch {}
+    }
+  }
+  function scheduleSave(){
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => saveSession(false), 10000);
+  }
+  function startPeriodicSave(){
+    clearInterval(saveInterval);
+    saveInterval = setInterval(() => saveSession(false), 10000);
+  }
+  function stopPeriodicSave(){
+    clearTimeout(saveTimer);
+    clearInterval(saveInterval);
+    saveTimer = null;
+    saveInterval = null;
+  }
+
+  const nameIn = (s, sp) => (s.speakerNames && s.speakerNames[sp]) || ('Speaker ' + sp);
+  const textOf = s => (s.turns||[]).map(t =>
+    `${t.t != null ? '['+fmtClock(t.t)+'] ' : ''}${nameIn(s, t.speaker)}: ${t.text}`).join('\n');
+
+  async function renderHistory(){
+    const box = $('histList');
+    if (!db){
+      box.innerHTML = '<div id="histEmpty">Historial no disponible en este navegador.</div>';
+      $('histCount').textContent = '';
+      return;
+    }
+    let items = [];
+    try { items = await dbAll(); } catch { return; }
+    $('histCount').textContent = `${items.length} / ${MAX_HIST}`;
+    items.sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
+    if (!items.length){ box.innerHTML = '<div id="histEmpty">Aún no hay transcripciones guardadas.</div>'; return; }
+    box.innerHTML = items.map(s => {
+      const fecha = new Date(s.fecha).toLocaleString('es-MX', {dateStyle:'medium', timeStyle:'short'});
+      const modo = s.mode === 'live' ? 'en vivo' : 'archivo';
+      return `<div class="hist-item" data-id="${s.id}">
+        <div class="hist-meta">
+          <div class="t1">${escapeHtml(s.titulo || 'Transcripción')}</div>
+          <div class="t2">${fecha} · ${modo} · ${(s.turns||[]).length} intervenciones</div>
+        </div>
+        <button data-act="open">Abrir</button>
+        <button data-act="txt">.txt</button>
+        <button data-act="del" class="danger">Borrar</button>
+      </div>`;
+    }).join('');
+  }
+
+  function openSession(s){
+    stopping = true; fileJobActive = false;
+    currentSession = s;
+    // Las sesiones anteriores a esta función no guardaban la etiqueta original.
+    // En ellas, la etiqueta disponible al abrirse se toma como punto de partida.
+    turns = (s.turns || []).map(t => ({
+      ...t,
+      originalSpeaker: t.originalSpeaker != null ? t.originalSpeaker : t.speaker,
+      endT: t.endT != null ? t.endT : t.t,
+      parts: Array.isArray(t.parts) && t.parts.length
+        ? t.parts
+        : [{ text: t.text || '', t: t.t != null ? t.t : null }]
+    }));
+    speakerNames = s.speakerNames || {};
+    interimTurns = null;
+    mode = 'history';
+    clearAudio();
+    refreshTitle();
+    render();
+    showView('live');
+    setStatus('historial', '');
+    $('timer').textContent = '';
+    $('procNote').style.display = 'none';
+    $('btnAttach').style.display = 'inline-block';
+  }
+
+  $('histList').addEventListener('click', async e => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    const id = btn.closest('.hist-item').dataset.id;
+    let s = null;
+    try { s = (await dbAll()).find(x => x.id === id); } catch {}
+    if (!s) return;
+    const act = btn.dataset.act;
+    if (act === 'open') openSession(s);
+    else if (act === 'txt') downloadText(textOf(s), s.titulo);
+    else if (act === 'del'){
+      if (confirm('¿Eliminar esta transcripción del historial?')){
+        try { await dbDelete(id); } catch {}
+        renderHistory();
+      }
+    }
+  });
+
+  $('histClearAll').addEventListener('click', async () => {
+    if (!db) return;
+    let items = [];
+    try { items = await dbAll(); } catch { return; }
+    if (!items.length) return;
+    if (!confirm(`Se eliminarán las ${items.length} transcripciones del historial. Esta acción no se puede deshacer. ¿Continuar?`)) return;
+    for (const s of items){ try { await dbDelete(s.id); } catch {} }
+    currentSession = null;
+    renderHistory();
+  });
+
+  // Recargar el audio original en una sesión reabierta para habilitar la escucha ▶
+  $('btnAttach').addEventListener('click', () => $('attachInput').click());
+  $('attachInput').addEventListener('change', async e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    try {
+      let blob = f;
+      if (isVideo(f)) blob = await extractWav(f, ()=>{});
+      setAudioSource(blob);
+      render();
+    } catch { showErr('No fue posible cargar ese audio.'); }
+    e.target.value = '';
+  });
+
+  // Listar dispositivos de entrada al activar una opción de micrófono/entrada
+  function attachDevicePicker(checkId, selectId){
+    $(checkId).addEventListener('change', async e => {
+      const sel = $(selectId);
+      if (!e.target.checked){ sel.style.display = 'none'; return; }
+      try {
+        // Se pide permiso brevemente para que el navegador revele los nombres de los dispositivos
+        const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Importante: enumerar ANTES de liberar el permiso, o algunos navegadores ocultan los nombres
+        const devs = (await navigator.mediaDevices.enumerateDevices())
+          .filter(d => d.kind === 'audioinput' && d.deviceId);
+        tmp.getTracks().forEach(t => t.stop());
+        if (!devs.length || devs.every(d => !d.label)){
+          showErr('El navegador no reveló los dispositivos de entrada. Permita el micrófono para este archivo: clic en el ícono junto a la barra de direcciones → Micrófono → Permitir, y vuelva a marcar la casilla.');
+        }
+        sel.innerHTML = devs.map((d,i) =>
+          `<option value="${d.deviceId}">${escapeHtml(d.label || ('Entrada ' + (i+1)))}</option>`).join('');
+        sel.style.display = 'block';
+      } catch {
+        showErr('Permiso de micrófono denegado. Autorícelo para poder elegir el dispositivo de entrada.');
+        e.target.checked = false;
+      }
+    });
+  }
+  attachDevicePicker('srcMic', 'micDevice');
+  attachDevicePicker('srcMyMic', 'myMicDevice');
+
+  /* ════════════ CAPTURA DE AUDIO (modo en vivo) ════════════ */
+  // Si la única fuente termina, la sesión se conserva y se pide volver a
+  // compartir el audio. Así no se pierde el texto ni se mezcla un cierre de
+  // captura con un cierre definitivo solicitado por la persona usuaria.
+  function sourceEnded(nombre, generation){
+    if (stopping || mode !== 'live' || captureTransition || generation !== captureGeneration) return;
+    const quedanVivas = streams.some(s => s.getAudioTracks().some(t => t.readyState === 'live'));
+    if (quedanVivas){
+      showErr('Se desconectó ' + nombre + '. La transcripción continúa con las demás fuentes.');
+    } else {
+      enterCaptureRecovery(nombre);
+    }
+  }
+
+  function enterCaptureRecovery(nombre){
+    if (stopping || mode !== 'live' || captureLost) return;
+    captureLost = true;
+    captureTransition = true;
+    captureGeneration += 1;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    reconnecting = false;
+    reconnectRequested = false;
+    const abortPending = activeConnectionAbort;
+    activeConnectionAbort = null;
+    try { if (abortPending) abortPending(); } catch {}
+    const client = soniox;
+    soniox = null;
+    try { if (client) client.cancel(); } catch {}
+    finishRecording();
+    cleanupCapturedMedia();
+    liveStream = null;
+    captureTransition = false;
+    interimTurns = null;
+    scheduleRender();
+    saveSession(false);
+    setStatus('sin audio', 'busy');
+    showRecoveryNote(
+      `Se perdió ${nombre}. La sesión y el texto siguen guardados; pulse «Volver a compartir audio» para continuar.`,
+      'capture-lost'
+    );
+    $('btnPause').style.display = 'none';
+    $('btnRecoverAudio').style.display = 'inline-block';
+  }
+
+  async function getMixedStream(useSystem, useMic, useMyMic, generation=captureGeneration){
+    const tracks = [];
+    if (useSystem){
+      const disp = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false }
+      });
+      streams.push(disp);
+      // Importante: NO detener la pista de video. Al compartir pantalla completa
+      // (Windows), detenerla finaliza toda la captura, incluido el audio.
+      // El video no se envía a ningún lado; solo se mantiene activo.
+      const a = disp.getAudioTracks();
+      if (!a.length){
+        disp.getTracks().forEach(t=>t.stop());
+        throw new Error('No se recibió audio del sistema. Repita el proceso y marque la casilla «Compartir audio» en el diálogo de compartir pantalla/pestaña.');
+      }
+      tracks.push(...a);
+      a[0].addEventListener('ended', () => sourceEnded('el audio del sistema', generation));
+    }
+    if (useMic){
+      const devId = $('micDevice').value;
+      // Sin cancelación de eco ni supresión de ruido: distorsionan señales de
+      // loopback (BlackHole) y degradan la transcripción
+      const constraints = {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      };
+      if (devId) constraints.deviceId = { exact: devId };
+      const mic = await navigator.mediaDevices.getUserMedia({ audio: constraints });
+      streams.push(mic);
+      tracks.push(...mic.getAudioTracks());
+      mic.getAudioTracks()[0].addEventListener('ended', () => sourceEnded('la entrada de audio seleccionada', generation));
+    }
+    if (useMyMic){
+      const devId = $('myMicDevice').value;
+      // Micrófono físico: cancelación de eco activa para no duplicar el audio
+      // de la reunión que sale por las bocinas
+      const c = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+      if (devId) c.deviceId = { exact: devId };
+      const myMic = await navigator.mediaDevices.getUserMedia({ audio: c });
+      streams.push(myMic);
+      tracks.push(...myMic.getAudioTracks());
+      myMic.getAudioTracks()[0].addEventListener('ended', () => sourceEnded('su micrófono', generation));
+    }
+    if (tracks.length === 1) return new MediaStream(tracks);
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const dest = audioCtx.createMediaStreamDestination();
+    for (const t of tracks){
+      audioCtx.createMediaStreamSource(new MediaStream([t])).connect(dest);
+    }
+    return dest.stream;
+  }
+
+  /* ════════════ MODO EN VIVO (Soniox tiempo real) ════════════ */
+  const CONNECT_TIMEOUT_MS = 15000;
+  const elapsedLiveSeconds = () => liveSessionStartedAt
+    ? Math.max(0, (Date.now() - liveSessionStartedAt) / 1000)
+    : 0;
+
+  function showRecoveryNote(text, kind='recovery'){
+    const note = $('procNote');
+    note.textContent = text;
+    note.className = kind;
+    note.style.display = 'block';
+  }
+  function clearRecoveryNote(){
+    const note = $('procNote');
+    note.style.display = 'none';
+    note.className = '';
+    note.textContent = '';
+  }
+  const isLiveRunActive = runId =>
+    mode === 'live' && !stopping && runId === liveRunId;
+  function setLiveControls(active){
+    $('btnStop').style.display = active ? 'inline-block' : 'none';
+    if (!active){
+      $('btnPause').style.display = 'none';
+      $('btnRecoverAudio').style.display = 'none';
+    }
+  }
+  function liveStreamIsAlive(){
+    return !!liveStream && liveStream.getAudioTracks().some(t => t.readyState === 'live');
+  }
+  function isFatalLiveError(status, message, errorCode){
+    const code = Number(errorCode);
+    const all = `${status || ''} ${message || ''} ${errorCode || ''}`;
+    if (/api_key_fetch_failed|get_user_media_failed|queue_limit_exceeded/i.test(String(status))) return true;
+    if (Number.isFinite(code) && code >= 400 && code < 500 && code !== 408 && code !== 429) return true;
+    return /unauthorized|forbidden|invalid api|api key|credit|payment|unsupported|invalid model|bad request/i.test(all);
+  }
+  function friendlyLiveError(status, message, errorCode){
+    const all = `${status || ''} ${message || ''} ${errorCode || ''}`;
+    if (/unauthorized|forbidden|api key|401|403/i.test(all)){
+      return 'Clave de API rechazada. Verifique que sea válida y tenga crédito disponible.';
+    }
+    if (!navigator.onLine) return 'Se perdió la conexión a internet.';
+    return 'Soniox perdió la conexión' + (message ? ': ' + message : '.');
+  }
+  function makeLiveError(status, message, errorCode){
+    const error = new Error(friendlyLiveError(status, message, errorCode));
+    error.sonioxStatus = status;
+    error.sonioxCode = errorCode;
+    error.fatal = isFatalLiveError(status, message, errorCode);
+    return error;
+  }
+  async function loadSonioxClient(){
+    if (SonioxClientCtor) return SonioxClientCtor;
+    try {
+      if (window.__SONIOX_TEST_CLIENT__) SonioxClientCtor = window.__SONIOX_TEST_CLIENT__;
+      else ({ SonioxClient: SonioxClientCtor } = await import('https://unpkg.com/@soniox/speech-to-text-web@1.4.0?module'));
+      if (!SonioxClientCtor || SonioxClientCtor.isSupported === false){
+        throw makeLiveError('browser_unsupported', 'Este navegador no admite la captura en vivo requerida por Soniox.', null);
+      }
+      return SonioxClientCtor;
+    } catch (error) {
+      if (error && error.fatal != null) throw error;
+      throw makeLiveError('component_load_failed', 'No fue posible cargar el componente de transcripción en vivo.', null);
+    }
+  }
+
+  function requestReconnect(reason){
+    if (stopping || mode !== 'live') return;
+    if (!liveStreamIsAlive()){
+      enterCaptureRecovery('la fuente de audio');
+      return;
+    }
+    if (reconnectTimer) return;
+    interimTurns = null;
+    scheduleRender();
+    saveSession(false);
+    if (recoveryStartedAt == null) recoveryStartedAt = Date.now();
+    setStatus(navigator.onLine ? 'reconectando…' : 'sin conexión', 'busy');
+    showRecoveryNote(
+      (navigator.onLine ? 'Reconectando con Soniox' : 'Sin internet; se reconectará automáticamente') +
+      ' · el audio local sigue grabándose.'
+    );
+    if (!navigator.onLine) return;
+    if (reconnecting){
+      reconnectRequested = true;
+      return;
+    }
+    const delay = RECONNECT_DELAYS_MS[Math.min(reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)];
+    reconnectAttempt += 1;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      attemptReconnect();
+    }, delay);
+  }
+
+  async function attemptReconnect(){
+    if (stopping || mode !== 'live' || reconnecting) return;
+    if (!navigator.onLine){ requestReconnect('Sin conexión a internet.'); return; }
+    if (!liveStreamIsAlive()){
+      enterCaptureRecovery('la fuente de audio');
+      return;
+    }
+    reconnecting = true;
+    reconnectRequested = false;
+    setStatus('reconectando…', 'busy');
+    try {
+      await connectLiveClient(true, liveRunId);
+      reconnecting = false;
+      if (reconnectRequested || !soniox){
+        reconnectRequested = false;
+        requestReconnect('La conexión se cerró durante la recuperación.');
+      }
+    } catch (error){
+      reconnecting = false;
+      reconnectRequested = false;
+      if (error.fatal){
+        stopAll(error.message);
+        return;
+      }
+      requestReconnect(error.message);
+    }
+  }
+
+  async function connectLiveClient(isReconnect=false, runId=liveRunId){
+    if (!isLiveRunActive(runId)) return;
+    const SonioxClient = await loadSonioxClient();
+    if (!isLiveRunActive(runId)) return;
+    const connection = {
+      id: ++liveConnectionId,
+      runId,
+      started: false,
+      disconnected: false,
+      timeOffset: liveHasConnected ? elapsedLiveSeconds() : 0,
+      speakerBase: liveHasConnected
+        ? turns.reduce((max,t) => Math.max(max, Number(t.speaker) || 0), 0)
+        : 0,
+      lastSpeaker: null
+    };
+    let settled = false;
+    let resolveStart, rejectStart;
+    const startReady = new Promise((resolve, reject) => {
+      resolveStart = resolve;
+      rejectStart = reject;
+    });
+    let client = null;
+    let connectionTimer = null;
+
+    const rejectConnection = error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(connectionTimer);
+      if (activeConnectionAbort === abortConnection) activeConnectionAbort = null;
+      rejectStart(error);
+    };
+    const abortConnection = () => {
+      if (settled) return;
+      connection.disconnected = true;
+      settled = true;
+      clearTimeout(connectionTimer);
+      if (soniox === client) soniox = null;
+      try { if (client) client.cancel(); } catch {}
+      resolveStart();
+    };
+    const disconnectOnce = reason => {
+      if (connection.disconnected || !isLiveRunActive(connection.runId)) return;
+      connection.disconnected = true;
+      const wasCurrent = soniox === client;
+      if (wasCurrent) soniox = null;
+      try { client.cancel(); } catch {}
+      if (!connection.started){
+        rejectConnection(makeLiveError('websocket_error', reason, null));
+      } else if (wasCurrent && !stopping){
+        requestReconnect(reason);
+      }
+    };
+
+    client = new SonioxClient({
+      apiKey: liveApiKey,
+      bufferQueueSize: 2000,
+      keepAlive: true,
+      keepAliveInterval: 5000,
+      onError: (status, message, errorCode) => {
+        if (!isLiveRunActive(connection.runId) || connection.disconnected || soniox !== client) return;
+        const error = makeLiveError(status, message, errorCode);
+        if (!connection.started){
+          connection.disconnected = true;
+          if (soniox === client) soniox = null;
+          rejectConnection(error);
+          return;
+        }
+        connection.disconnected = true;
+        if (soniox === client) soniox = null;
+        if (error.fatal) stopAll(error.message);
+        else requestReconnect(error.message);
+      },
+      onStarted: () => {
+        if (connection.disconnected || !isLiveRunActive(connection.runId) || captureLost || soniox !== client) return;
+        connection.started = true;
+        if (!settled){
+          settled = true;
+          clearTimeout(connectionTimer);
+          if (activeConnectionAbort === abortConnection) activeConnectionAbort = null;
+          resolveStart();
+        }
+        const recovered = liveHasConnected && recoveryStartedAt != null;
+        const recoverySeconds = recovered ? Math.max(1, Math.round((Date.now()-recoveryStartedAt)/1000)) : 0;
+        liveHasConnected = true;
+        captureLost = false;
+        reconnectAttempt = 0;
+        recoveryStartedAt = null;
+        hideErr();
+        setStatus(paused ? 'en pausa' : 'en vivo', paused ? 'busy' : 'live');
+        showView('live');
+        $('btnPause').textContent = paused ? 'Reanudar' : 'Pausar';
+        $('btnPause').style.display = 'inline-block';
+        $('btnRecoverAudio').style.display = 'none';
+        setLiveControls(true);
+        if (recovered){
+          showRecoveryNote(`Conexión recuperada en ${recoverySeconds} s · revise el audio local si faltara alguna frase.`, 'recovered');
+          setTimeout(() => {
+            if ($('procNote').className === 'recovered') clearRecoveryNote();
+          }, 6000);
+        } else {
+          clearRecoveryNote();
+        }
+      },
+      onPartialResult: result => {
+        if (isLiveRunActive(connection.runId) && !captureLost && soniox === client){
+          handleLiveTokens(result, connection);
+        }
+      },
+      onFinished: () => {
+        if (soniox !== client) return;
+        if (!isLiveRunActive(connection.runId)){
+          saveSession(true);
+          return;
+        }
+        if (!connection.started){
+          rejectConnection(makeLiveError('websocket_error', 'Soniox cerró la conexión antes de comenzar.', null));
+          return;
+        }
+        disconnectOnce('Soniox cerró la sesión inesperadamente.');
+      }
+    });
+    soniox = client;
+    activeConnectionAbort = abortConnection;
+    connectionTimer = setTimeout(() => {
+      if (connection.started || connection.disconnected || !isLiveRunActive(connection.runId)) return;
+      connection.disconnected = true;
+      if (soniox === client) soniox = null;
+      try { client.cancel(); } catch {}
+      rejectConnection(makeLiveError('connection_timeout', 'Soniox no respondió en 15 segundos.', null));
+    }, CONNECT_TIMEOUT_MS);
+
+    const liveConfig = {
+      model: 'stt-rt-v5',
+      stream: liveStream,
+      audioFormat: 'auto',
+      languageHints: liveLangs,
+      enableSpeakerDiarization: true,
+      enableEndpointDetection: activeLiveProfile === 'fast'
+    };
+    try {
+      await client.start(liveConfig);
+      // El SDK 1.4.0 no escucha el evento close. Se monitorea directamente para
+      // detectar cierres silenciosos que, de otro modo, dejarían la UI "en vivo".
+      const ws = client._websocket;
+      if (ws && typeof ws.addEventListener === 'function'){
+        ws.addEventListener('close', event => {
+          if (!isLiveRunActive(connection.runId) || soniox !== client) return;
+          disconnectOnce(`El canal en vivo se cerró${event.code ? ' (código '+event.code+')' : ''}.`);
+        }, { once: true });
+      }
+      await startReady;
+    } catch (error){
+      clearTimeout(connectionTimer);
+      if (activeConnectionAbort === abortConnection) activeConnectionAbort = null;
+      try { client.cancel(); } catch {}
+      if (soniox === client) soniox = null;
+      if (error && error.fatal != null) throw error;
+      throw makeLiveError('websocket_error', error && error.message, null);
+    }
+  }
+
+  async function startLive(apiKey, langs, stream, runId=liveRunId){
+    if (!isLiveRunActive(runId)) return;
+    liveApiKey = apiKey;
+    liveLangs = langs;
+    liveStream = stream;
+    liveSessionStartedAt = Date.now();
+    liveHasConnected = false;
+    liveConnectionId = 0;
+    captureLost = false;
+    reconnectAttempt = 0;
+    recoveryStartedAt = null;
+    activeLiveProfile = $('liveProfile').value;
+    t0 = liveSessionStartedAt;
+    clearInterval(timerIv);
+    timerIv = setInterval(() => { $('timer').textContent = fmtClock(elapsedLiveSeconds()); }, 1000);
+    $('timer').textContent = fmtClock(0);
+    startPeriodicSave();
+    try {
+      await connectLiveClient(false, runId);
+    } catch (error){
+      if (!isLiveRunActive(runId)) return;
+      if (error.fatal) throw error;
+      requestReconnect(error.message);
+    }
+  }
+
+  function handleLiveTokens(result, connection){
+    const tokens = (result && result.tokens) || [];
+    const interim = [];
+    for (const tok of tokens){
+      if (!tok || !tok.text || tok.text === '<end>' || tok.text === '<fin>') continue;
+      const rawSpeaker = tok.speaker != null ? parseInt(tok.speaker, 10) : null;
+      const sp = rawSpeaker != null && !isNaN(rawSpeaker)
+        ? rawSpeaker + connection.speakerBase
+        : (connection.lastSpeaker || lastSpeaker);
+      connection.lastSpeaker = sp;
+      if (!isNaN(sp)) lastSpeaker = sp;
+      const t = (tok.start_ms != null) ? connection.timeOffset + tok.start_ms/1000 : null;
+      if (tok.is_final) appendTo(turns, sp, tok.text, t);
+      else appendTo(interim, sp, tok.text, t);
+    }
+    // El contenido provisional aparece de inmediato. En modo precisión, la UI
+    // oculta únicamente la identidad provisional y la confirma después.
+    interimTurns = interim.length ? interim : null;
+    scheduleRender();
+    scheduleSave(); // autoguardado del historial durante la sesión en vivo
+  }
+
+  /* ════════════ MODO ARCHIVO (Soniox asíncrono) ════════════ */
+  async function api(path, opts, key){
+    const res = await fetch(API_BASE + path, {
+      ...opts,
+      headers: { 'Authorization': 'Bearer ' + key, ...(opts.headers || {}) }
+    });
+    if (!res.ok){
+      let msg = '';
+      try { const j = await res.json(); msg = j.message || j.error || JSON.stringify(j); }
+      catch { msg = await res.text().catch(()=> ''); }
+      const err = new Error(`HTTP ${res.status}: ${msg}`);
+      err.status = res.status;
+      throw err;
+    }
+    return (opts && opts.method === 'DELETE') ? null : res.json();
+  }
+
+  const isVideo = f => f.type.startsWith('video/') || /\.(mp4|mov|mkv|avi|wmv)$/i.test(f.name);
+  const isSonioxNativeFile = f => /\.(aac|aiff|amr|asf|flac|mp3|ogg|wav|webm|m4a|mp4)$/i.test(f.name);
+
+  // Solo convierte contenedores que Soniox no recibe directamente. Conserva
+  // hasta dos canales y una frecuencia de muestreo alta para no perder pistas
+  // acústicas que ayudan a separar las voces.
+  async function extractWav(file, note){
+    note('extrayendo audio del video…');
+    const buf = await file.arrayBuffer();
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    let decoded;
+    try { decoded = await ac.decodeAudioData(buf); }
+    finally { try{ac.close();}catch{} }
+    const rate = Math.min(48000, Math.max(16000, decoded.sampleRate || 48000));
+    const channels = Math.min(2, Math.max(1, decoded.numberOfChannels || 1));
+    const off = new OfflineAudioContext(channels, Math.ceil(decoded.duration * rate), rate);
+    const src = off.createBufferSource();
+    src.buffer = decoded; src.connect(off.destination); src.start();
+    const rendered = await off.startRendering();
+    return encodeWav(
+      Array.from({length: channels}, (_, index) => rendered.getChannelData(index)),
+      rate
+    );
+  }
+
+  function encodeWav(channelData, rate){
+    const channels = channelData.length;
+    const sampleCount = channelData[0].length;
+    const dataBytes = sampleCount * channels * 2;
+    const buf = new ArrayBuffer(44 + dataBytes);
+    const v = new DataView(buf);
+    const wstr = (o,s) => { for(let i=0;i<s.length;i++) v.setUint8(o+i, s.charCodeAt(i)); };
+    wstr(0,'RIFF'); v.setUint32(4, 36 + dataBytes, true); wstr(8,'WAVE');
+    wstr(12,'fmt '); v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,channels,true);
+    v.setUint32(24,rate,true); v.setUint32(28,rate*channels*2,true); v.setUint16(32,channels*2,true); v.setUint16(34,16,true);
+    wstr(36,'data'); v.setUint32(40, dataBytes, true);
+    let o = 44;
+    for (let i=0;i<sampleCount;i++){
+      for (let channel=0;channel<channels;channel++,o+=2){
+        const s = Math.max(-1, Math.min(1, channelData[channel][i]));
+        v.setInt16(o, s < 0 ? s*0x8000 : s*0x7FFF, true);
+      }
+    }
+    return new Blob([buf], {type:'audio/wav'});
+  }
+
+  // Corrige únicamente etiquetas nuevas con presencia mínima en todo el
+  // archivo y que aparecen entre dos turnos del mismo speaker. Se conserva
+  // originalSpeaker para que «Restablecer etiquetas» pueda deshacerlo.
+  function smoothRareFileSpeakers(){
+    const stats = new Map();
+    for (const turn of turns){
+      const current = stats.get(turn.speaker) || { turns:0, words:0 };
+      current.turns += 1;
+      current.words += (turn.text.trim().match(/\S+/g) || []).length;
+      stats.set(turn.speaker, current);
+    }
+    let corrected = 0;
+    for (let index=1; index<turns.length-1; index++){
+      const previous = turns[index-1];
+      const current = turns[index];
+      const next = turns[index+1];
+      const stat = stats.get(current.speaker);
+      const currentWords = (current.text.trim().match(/\S+/g) || []).length;
+      if (previous.speaker === next.speaker && current.speaker !== previous.speaker &&
+          stat && stat.turns <= 2 && stat.words <= 6 && currentWords <= 4){
+        current.speaker = previous.speaker;
+        corrected += 1;
+      }
+    }
+    return corrected;
+  }
+
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  async function transcribeFile(){
+    hideErr();
+    const key = $('apiKey').value.trim();
+    const f = $('fileInput').files[0];
+    if (!key) return showErr('Ingrese su clave de API de Soniox.');
+    if (!f) return showErr('Seleccione un archivo de audio o video.');
+    persistKey(key);
+
+    mode = 'file'; fileJobActive = true; stopping = false;
+    $('btnFile').disabled = true;
+    $('btnAttach').style.display = 'none';
+    resetTranscript();
+    newSession('file', f.name);
+    showView('live');
+    const note = txt => { const n=$('procNote'); n.style.display='block'; n.textContent = txt; };
+    setStatus('procesando', 'busy');
+    $('timer').textContent = '';
+    let fileId = null, trId = null;
+
+    try {
+      // 1) Preparar el archivo. MP4 y WebM se envían directamente para
+      // conservar sus canales y calidad; solo se convierten contenedores no
+      // admitidos por Soniox, como MOV o MKV.
+      let blob = f, name = f.name;
+      if (isVideo(f) && !isSonioxNativeFile(f)){
+        blob = await extractWav(f, note);
+        name = 'audio.wav';
+      }
+      setAudioSource(blob); // conserva el audio localmente para escuchar cada intervención
+
+      // 2) Subir
+      note('subiendo archivo…');
+      const form = new FormData();
+      form.append('file', blob, name);
+      const up = await api('/v1/files', { method:'POST', body: form }, key);
+      fileId = up.id;
+
+      // 3) Crear transcripción
+      note('transcribiendo… (los archivos largos pueden tardar varios minutos)');
+      const tr = await api('/v1/transcriptions', {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify({
+          model: 'stt-async-v5',
+          file_id: fileId,
+          language_hints: $('lang').value.split(','),
+          enable_speaker_diarization: true
+        })
+      }, key);
+      trId = tr.id;
+
+      // 4) Esperar a que termine
+      let status = tr.status, waited = 0;
+      while (status !== 'completed'){
+        if (status === 'error') throw new Error(tr.error_message || 'La transcripción falló en el servicio.');
+        if (!fileJobActive) return; // cancelado por el usuario
+        await sleep(3000); waited += 3;
+        const st = await api('/v1/transcriptions/' + trId, {}, key);
+        status = st.status;
+        if (st.error_message && status === 'error') throw new Error(st.error_message);
+        note(`transcribiendo… ${fmtClock(waited)}`);
+      }
+
+      // 5) Obtener el transcript con hablantes
+      const t = await api('/v1/transcriptions/' + trId + '/transcript', {}, key);
+      for (const tok of (t.tokens || [])){
+        if (!tok || !tok.text) continue;
+        const sp = tok.speaker != null ? parseInt(tok.speaker, 10) : lastSpeaker;
+        if (!isNaN(sp)) lastSpeaker = sp;
+        appendTo(turns, sp, tok.text, tok.start_ms != null ? tok.start_ms/1000 : null);
+      }
+      const correctedSpeakers = $('smoothFileSpeakers').checked
+        ? smoothRareFileSpeakers()
+        : 0;
+      render();
+      $('procNote').style.display = 'none';
+      setStatus(correctedSpeakers
+        ? `completado · ${correctedSpeakers} etiqueta${correctedSpeakers===1?'':'s'} breve${correctedSpeakers===1?'':'s'} corregida${correctedSpeakers===1?'':'s'}`
+        : 'completado', '');
+      saveSession(true);
+    } catch (e){
+      showView('setup');
+      setStatus('inactivo', '');
+      showErr(e.status === 401
+        ? 'Clave de API rechazada. Verifique que sea válida y tenga crédito disponible.'
+        : (String(e.message||e).includes('Failed to fetch')
+            ? 'No fue posible contactar la API de Soniox desde el navegador. Verifique su conexión; si el problema persiste, puede ser una restricción del servicio (CORS).'
+            : ('Error: ' + (e.message || e))));
+    } finally {
+      fileJobActive = false;
+      $('btnFile').disabled = false;
+      // Limpieza en Soniox (mejor esfuerzo)
+      try { if (trId)   await api('/v1/transcriptions/' + trId, {method:'DELETE'}, key); } catch {}
+      try { if (fileId) await api('/v1/files/' + fileId, {method:'DELETE'}, key); } catch {}
+    }
+  }
+
+  /* ════════════ TURNOS Y RENDER ════════════ */
+  // Los tokens de Soniox traen su propio espaciado (" hola"), se concatenan tal cual.
+  function appendTo(list, sp, text, t){
+    const last = list[list.length-1];
+    if (last && last.speaker === sp){
+      if (!Array.isArray(last.parts)) last.parts = [{ text: last.text, t: last.t }];
+      last.text += text;
+      last.parts.push({ text, t });
+      if (t != null) last.endT = t;
+    } else {
+      const clean = text.replace(/^\s+/,'');
+      list.push({
+        speaker: sp,
+        originalSpeaker: sp,
+        text: clean,
+        t,
+        endT: t,
+        parts: [{ text: clean, t }]
+      });
+    }
+  }
+
+  const spName = n => speakerNames[n] || ('Speaker ' + n);
+  const spColor = n => `var(${SP_COLORS[(n-1+SP_COLORS.length*10) % SP_COLORS.length]})`;
+
+  function turnHTML(t, interim, idx){
+    const namedProvisional = interim && activeLiveProfile === 'accuracy' && !!speakerNames[t.speaker];
+    const pendingVoice = interim && activeLiveProfile === 'accuracy' && !namedProvisional;
+    const c = pendingVoice ? 'var(--muted)' : spColor(t.speaker);
+    return `<div class="turn${interim?' interim':''}" data-i="${idx}">
+      <div class="rail" style="background:${c}"></div>
+      <div class="body">
+        <div class="who">
+          ${(!interim && t.t != null && audioURL) ? `<button class="play" data-i="${idx}" title="Escuchar este fragmento">&#9654;</button>` : ''}
+          ${pendingVoice
+            ? `<span style="color:${c}">Voz por confirmar</span>`
+            : `<span class="name" data-sp="${t.speaker}" title="Clic para renombrar" style="color:${c}">${escapeHtml(spName(t.speaker))}${namedProvisional ? ' <span style="color:var(--muted)">(provisional)</span>' : ''}</span>`}
+          ${!interim ? `<button class="reassign" data-i="${idx}" title="Esta intervención es de otra persona — reasignar">&#8646;</button>` : ''}
+          ${(!interim && t.t != null) ? `<span class="ts">${fmtClock(t.t)}</span>` : ''}
+        </div>
+        <div class="txt">${escapeHtml(t.text)}</div>
+      </div>
+    </div>`;
+  }
+
+  const MAX_RENDERED_TURNS = 250;
+  let renderFrame = null;
+  function scheduleRender(){
+    if (renderFrame != null) return;
+    const raf = window.requestAnimationFrame || (callback => setTimeout(callback, 16));
+    renderFrame = raf(() => {
+      renderFrame = null;
+      if (mode === 'live') renderLiveIncremental();
+      else render();
+    });
+  }
+
+  function appendInterimHTML(box){
+    box.querySelectorAll('.turn.interim').forEach(el => el.remove());
+    if (interimTurns && interimTurns.length){
+      box.insertAdjacentHTML('beforeend', interimTurns.map(t => turnHTML(t, true, -1)).join(''));
+    }
+  }
+
+  // En vivo solo cambia el último turno confirmado y el texto provisional.
+  // Se evita reconstruir cientos de nodos con cada paquete de Soniox.
+  function renderLiveIncremental(){
+    const box = $('transcript');
+    if (box.querySelector('.speaker-edit')) return;
+    const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    const first = Math.max(0, turns.length - MAX_RENDERED_TURNS);
+    const expectedCount = turns.length - first;
+    const confirmed = [...box.querySelectorAll('.turn:not(.interim)')];
+    const currentFirst = Number(box.dataset.firstTurn || 0);
+
+    // Cuando la ventana visual avanza, o la estructura no coincide, se hace
+    // una reconstrucción controlada. En los demás paquetes solo cambia la cola.
+    const structureMismatch = currentFirst !== first || confirmed.length > expectedCount ||
+      confirmed.some((el, offset) => parseInt(el.dataset.i, 10) !== first + offset);
+    if (structureMismatch){
+      render();
+      return;
+    }
+
+    const empty = box.querySelector('#empty');
+    if (empty) empty.remove();
+    appendInterimHTML(box);
+
+    if (expectedCount){
+      const visibleBefore = [...box.querySelectorAll('.turn:not(.interim)')];
+      if (visibleBefore.length){
+        const lastOffset = visibleBefore.length - 1;
+        const lastIndex = first + lastOffset;
+        visibleBefore[lastOffset].outerHTML = turnHTML(turns[lastIndex], false, lastIndex);
+      }
+      for (let index = first + visibleBefore.length; index < turns.length; index++){
+        const interimNode = box.querySelector('.turn.interim');
+        if (interimNode) interimNode.insertAdjacentHTML('beforebegin', turnHTML(turns[index], false, index));
+        else box.insertAdjacentHTML('beforeend', turnHTML(turns[index], false, index));
+      }
+    }
+
+    appendInterimHTML(box);
+    box.dataset.firstTurn = String(first);
+    if (!box.children.length) box.innerHTML = '<div id="empty">La transcripción aparecerá aquí.</div>';
+    if (stick) box.scrollTop = box.scrollHeight;
+  }
+
+  function render(){
+    const box = $('transcript');
+    // Mientras se escribe un nombre, no se reemplaza el campo. El audio y los
+    // tokens continúan procesándose sin bloquear el hilo principal.
+    if (box.querySelector('.speaker-edit')) return;
+    const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    const first = Math.max(0, turns.length - MAX_RENDERED_TURNS);
+    let html = first
+      ? `<div class="render-limit-note">Se muestran las últimas ${MAX_RENDERED_TURNS} intervenciones. La transcripción completa permanece guardada y se incluye al copiar o descargar.</div>`
+      : '';
+    html += turns.slice(first).map((t,i) => turnHTML(t, false, i + first)).join('');
+    if (interimTurns) html += interimTurns.map(t => turnHTML(t, true, -1)).join('');
+    box.innerHTML = html || '<div id="empty">La transcripción aparecerá aquí.</div>';
+    box.dataset.firstTurn = String(first);
+    if (stick) box.scrollTop = box.scrollHeight;
+    if (audioEl) refreshPlayButtons();
+  }
+
+  /* ════════════ REPRODUCCIÓN SINCRONIZADA (modo archivo) ════════════ */
+  function setAudioSource(blob){
+    stopPlayback();
+    if (audioURL) URL.revokeObjectURL(audioURL);
+    audioURL = URL.createObjectURL(blob);
+    if (!audioEl){
+      audioEl = new Audio();
+      audioEl.preload = 'auto';
+      audioEl.ontimeupdate = () => {
+        if (stopAt != null && audioEl.currentTime >= stopAt) audioEl.pause();
+      };
+      audioEl.onpause = () => { playingIdx = null; stopAt = null; refreshPlayButtons(); };
+    }
+    audioEl.src = audioURL;
+  }
+
+  function stopPlayback(){ if (audioEl){ try{ audioEl.pause(); }catch{} } }
+  function clearAudio(){
+    stopPlayback();
+    if (audioURL){ URL.revokeObjectURL(audioURL); audioURL = null; }
+    if (audioEl) audioEl.removeAttribute('src');
+  }
+
+  function refreshPlayButtons(){
+    document.querySelectorAll('#transcript .turn').forEach(el => {
+      const b = el.querySelector('.play');
+      if (!b) return;
+      const active = playingIdx != null
+        && parseInt(b.dataset.i,10) === playingIdx
+        && audioEl && !audioEl.paused;
+      b.innerHTML = active ? '&#10074;&#10074;' : '&#9654;';
+      el.classList.toggle('playing', active);
+    });
+  }
+
+  function playTurn(i){
+    if (!audioEl || !audioURL) return;
+    const t = turns[i];
+    if (!t || t.t == null) return;
+    if (playingIdx === i && !audioEl.paused){ audioEl.pause(); return; } // segundo clic: pausa
+    let end = null;
+    for (let j = i+1; j < turns.length; j++){
+      if (turns[j].t != null){ end = turns[j].t; break; }
+    }
+    stopAt = end;                 // reproduce hasta donde inicia la siguiente intervención
+    playingIdx = i;
+    audioEl.currentTime = t.t;
+    audioEl.play().then(refreshPlayButtons).catch(()=>{});
+    refreshPlayButtons();
+  }
+
+  function beginSpeakerRename(el, sp){
+    const input = document.createElement('input');
+    input.className = 'speaker-edit';
+    input.value = speakerNames[sp] || '';
+    input.placeholder = 'Nombre de Speaker ' + sp;
+    el.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let finished = false;
+    const finish = save => {
+      if (finished) return;
+      finished = true;
+      if (save){
+        const limpio = input.value.trim();
+        if (limpio) speakerNames[sp] = limpio;
+        else delete speakerNames[sp];
+        saveSession(false);
+      }
+      if (input.isConnected) input.remove();
+      render();
+    };
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Enter'){ event.preventDefault(); finish(true); }
+      else if (event.key === 'Escape'){ event.preventDefault(); finish(false); }
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  // Reproducir fragmento, reasignar intervención o renombrar hablantes
+  $('transcript').addEventListener('click', e => {
+    const pb = e.target.closest('.play');
+    if (pb){ playTurn(parseInt(pb.dataset.i, 10)); return; }
+    const rb = e.target.closest('.reassign');
+    if (rb){ openSpMenu(parseInt(rb.dataset.i, 10), rb); return; }
+    const el = e.target.closest('.name');
+    if (!el) return;
+    const sp = parseInt(el.dataset.sp, 10);
+    beginSpeakerRename(el, sp);
+  });
+
+  function escapeHtml(s){
+    return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  }
+
+  /* ════════════ REASIGNAR UNA INTERVENCIÓN A OTRO HABLANTE ════════════ */
+  let spMenuEl = null;
+  function closeSpMenu(){ if (spMenuEl){ spMenuEl.remove(); spMenuEl = null; } }
+
+  function openSpMenu(i, anchor){
+    closeSpMenu();
+    const conocidos = new Set(turns.map(t => t.speaker));
+    Object.keys(speakerNames).forEach(k => conocidos.add(parseInt(k, 10)));
+    const nums = [...conocidos].filter(n => !isNaN(n)).sort((a,b) => a-b);
+
+    spMenuEl = document.createElement('div');
+    spMenuEl.className = 'sp-menu';
+    spMenuEl.innerHTML =
+      nums.map(n =>
+        `<button data-sp="${n}"><span style="color:${spColor(n)}">&#9679;</span> ${escapeHtml(spName(n))}</button>`
+      ).join('') +
+      `<button data-sp="new">&#65291; Nuevo hablante…</button>`;
+    document.body.appendChild(spMenuEl);
+
+    const r = anchor.getBoundingClientRect();
+    spMenuEl.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 240)) + 'px';
+    spMenuEl.style.top  = Math.min(r.bottom + 6, window.innerHeight - spMenuEl.offsetHeight - 8) + 'px';
+
+    spMenuEl.addEventListener('click', ev => {
+      const b = ev.target.closest('button');
+      if (!b) return;
+      let sp = b.dataset.sp;
+      if (sp === 'new'){
+        sp = (nums.length ? Math.max(...nums) : 0) + 1;
+        const nombre = prompt('Nombre del nuevo hablante (opcional):', '');
+        if (nombre === null){ closeSpMenu(); return; }
+        if (nombre.trim()) speakerNames[sp] = nombre.trim();
+      }
+      turns[i].speaker = parseInt(sp, 10);
+      closeSpMenu();
+      render();
+      saveSession();
+    });
+  }
+
+  document.addEventListener('click', e => {
+    if (spMenuEl && !spMenuEl.contains(e.target) && !e.target.closest('.reassign')) closeSpMenu();
+  });
+
+  /* ════════════ RESTABLECER ETIQUETAS DE SONIOX ════════════ */
+  function resetSpeakerLabels(){
+    if (!turns.length) return;
+    const changed = Object.keys(speakerNames).length > 0 || turns.some(t =>
+      t.originalSpeaker != null && t.speaker !== t.originalSpeaker
+    );
+    if (!changed) return;
+    if (!confirm('¿Restablecer los hablantes como los identificó Soniox? Se eliminarán los nombres y las reasignaciones manuales.')) return;
+
+    speakerNames = {};
+    turns.forEach(t => {
+      if (t.originalSpeaker != null) t.speaker = t.originalSpeaker;
+    });
+    closeSpMenu();
+    render();
+    saveSession();
+  }
+
+  /* ════════════ COPIAR / EXPORTAR ════════════ */
+  const exportSpeaker = (t, provisional) => {
+    if (!provisional) return spName(t.speaker);
+    return speakerNames[t.speaker]
+      ? `${speakerNames[t.speaker]} (provisional)`
+      : 'Voz por confirmar';
+  };
+
+  const entryText = (t, provisional=false) =>
+    `${t.t != null ? '['+fmtClock(t.t)+'] ' : ''}${exportSpeaker(t, provisional)}: ${t.text}`;
+
+  const confirmedText = () => turns.map(t => entryText(t, false)).join('\n');
+
+  // Para copiar durante la conversación se incluye también la frase que Soniox
+  // aún está procesando. Las descargas conservan únicamente texto confirmado.
+  const clipboardFullText = () => [
+    ...turns.map(t => entryText(t, false)),
+    ...(interimTurns || []).map(t => entryText(t, true))
+  ].join('\n');
+
+  function transcriptEndTime(){
+    let end = 0;
+    const all = [...turns, ...(interimTurns || [])];
+    for (const t of all){
+      if (t.endT != null) end = Math.max(end, t.endT);
+      else if (t.t != null) end = Math.max(end, t.t);
+    }
+    // En una sesión activa, los silencios también forman parte de la ventana.
+    if (mode === 'live' && !stopping && t0 != null){
+      end = Math.max(end, (Date.now() - t0) / 1000);
+    }
+    return end;
+  }
+
+  function sliceTurnSince(t, cutoff){
+    const parts = Array.isArray(t.parts) && t.parts.length
+      ? t.parts
+      : [{ text: t.text, t: t.t }];
+    const selected = parts.filter(p => p.t == null || p.t >= cutoff);
+    if (!selected.length){
+      const end = t.endT != null ? t.endT : t.t;
+      if (end == null || end < cutoff) return null;
+      return { ...t };
+    }
+    const clipped = selected.length < parts.length;
+    const text = selected.map(p => p.text).join('').replace(/^\s+/,'');
+    if (!text) return null;
+    const firstTime = selected.find(p => p.t != null);
+    return {
+      ...t,
+      text: (clipped ? '…' : '') + text,
+      t: firstTime ? firstTime.t : t.t
+    };
+  }
+
+  function recentAIText(seconds=180){
+    const cutoff = Math.max(0, transcriptEndTime() - seconds);
+    const confirmed = turns.map(t => sliceTurnSince(t, cutoff)).filter(Boolean);
+    const provisional = (interimTurns || []).map(t => sliceTurnSince(t, cutoff)).filter(Boolean);
+    const lines = [
+      ...confirmed.map(t => entryText(t, false)),
+      ...provisional.map(t => entryText(t, true))
+    ];
+    return lines.length
+      ? `CONTEXTO RECIENTE DE LA SESIÓN (ÚLTIMOS 3 MINUTOS)\n\n${lines.join('\n')}`
+      : '';
+  }
+
+  function showCopyMessage(message){
+    const m = $('copyMsg');
+    m.textContent = message;
+    m.classList.add('show');
+    setTimeout(() => m.classList.remove('show'), 1800);
+  }
+
+  async function writeClipboard(txt, message){
+    if (!txt) return;
+    try { await navigator.clipboard.writeText(txt); }
+    catch {
+      const ta = document.createElement('textarea');
+      ta.value = txt; document.body.appendChild(ta);
+      ta.select(); document.execCommand('copy'); ta.remove();
+    }
+    showCopyMessage(message);
+  }
+
+  async function copyAll(){
+    await writeClipboard(clipboardFullText(), 'Toda la transcripción fue copiada');
+  }
+
+  async function copyRecentAI(){
+    const txt = recentAIText(180);
+    if (!txt){
+      showCopyMessage('No hay texto en los últimos 3 minutos');
+      return;
+    }
+    await writeClipboard(txt, 'Últimos 3 minutos copiados para IA');
+  }
+
+  /* ════════════ PUENTE HACIA EL CHAT VINCULADO ════════════ */
+  const chatGPTRequests = new Map();
+
+  function sendThroughExtension(text, kind){
+    if (!text){
+      showCopyMessage('No hay texto para enviar');
+      return;
+    }
+    const requestId = 'tx-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,8);
+    const detectTimer = setTimeout(() => {
+      if (!chatGPTRequests.has(requestId)) return;
+      chatGPTRequests.delete(requestId);
+      showErr('No se detectó la extensión de Chrome. Verifique que esté instalada y que tenga permitido el acceso a archivos locales.');
+    }, 2500);
+    chatGPTRequests.set(requestId, { detectTimer, resultTimer: null });
+    showCopyMessage('Buscando el chat vinculado…');
+    window.postMessage({
+      source: 'soniox-transcriptor',
+      type: 'SEND_TO_LINKED_CHAT',
+      requestId,
+      kind,
+      text
+    }, '*');
+  }
+
+  window.addEventListener('message', e => {
+    if (e.source !== window || !e.data || e.data.source !== 'transcriptor-chatgpt-extension') return;
+    const req = chatGPTRequests.get(e.data.requestId);
+    if (!req) return;
+    if (e.data.type === 'CHATGPT_BRIDGE_ACK'){
+      clearTimeout(req.detectTimer);
+      req.resultTimer = setTimeout(() => {
+        chatGPTRequests.delete(e.data.requestId);
+        showErr('La extensión respondió, pero ChatGPT tardó demasiado. Abra el chat vinculado y vuelva a intentarlo.');
+      }, 30000);
+      showCopyMessage('Extensión detectada; preparando ChatGPT…');
+      return;
+    }
+    if (e.data.type !== 'CHATGPT_BRIDGE_RESULT') return;
+    clearTimeout(req.detectTimer);
+    clearTimeout(req.resultTimer);
+    chatGPTRequests.delete(e.data.requestId);
+    if (e.data.ok){
+      showCopyMessage(e.data.sent
+        ? 'Transcripción enviada a ChatGPT'
+        : 'Texto preparado en el chat vinculado');
+    } else {
+      showErr(e.data.error || 'No fue posible enviar la transcripción al chat vinculado.');
+    }
+  });
+
+  function sendAllToChatGPT(){
+    const body = clipboardFullText();
+    sendThroughExtension(body
+      ? `TRANSCRIPCIÓN ACUMULADA DE LA SESIÓN\n\n${body}`
+      : '', 'all');
+  }
+
+  function sendRecentToChatGPT(){
+    sendThroughExtension(recentAIText(180), 'recent');
+  }
+
+  function downloadText(txt, name){
+    if (!txt) return;
+    const blob = new Blob([txt], {type:'text/plain;charset=utf-8'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    const base = safeName(name);
+    a.download = (base || 'transcripcion-' + new Date().toISOString().slice(0,16).replace(/[:T]/g,'-')) + '.txt';
+    a.click(); URL.revokeObjectURL(a.href);
+  }
+  const downloadTxt = () => downloadText(confirmedText(), currentSession && currentSession.titulo);
+
+  /* ════════════ CICLO DE VIDA ════════════ */
+  async function startLiveClick(){
+    hideErr();
+    const key = $('apiKey').value.trim();
+    const useSystem = $('srcSystem').checked;
+    const useMic = $('srcMic').checked;
+    const useMyMic = $('srcMyMic').checked;
+    if (!key) return showErr('Ingrese su clave de API de Soniox.');
+    if (!useSystem && !useMic && !useMyMic) return showErr('Seleccione al menos una fuente de audio.');
+    if (mode === 'live' && !stopping) return;
+    persistKey(key);
+    const runId = ++liveRunId;
+    const generation = ++captureGeneration;
+    mode = 'live'; stopping = false; paused = false;
+    captureLost = false;
+    captureTransition = false;
+    liveSourceSelection = { useSystem, useMic, useMyMic };
+    liveApiKey = key;
+    liveLangs = $('lang').value.split(',');
+    activeLiveProfile = $('liveProfile').value;
+    startKeepAwake(); // dentro del clic, para que el navegador permita el audio
+    resetTranscript();
+    newSession('live', 'Sesión ' + fechaMX(new Date().toISOString()).replace(/[/:]/g, '-'));
+    $('btnAttach').style.display = 'none';
+    $('btnStart').disabled = true;
+    $('btnRecoverAudio').style.display = 'none';
+    setLiveControls(true);
+    setStatus('conectando…', '');
+    try {
+      const stream = await getMixedStream(useSystem, useMic, useMyMic, generation);
+      if (!isLiveRunActive(runId) || captureLost || generation !== captureGeneration){
+        try { stream.getTracks().forEach(t => t.stop()); } catch {}
+        return;
+      }
+      liveStream = stream;
+      startRecording(stream, false);
+      showView('live');
+      showRecoveryNote('Conectando con Soniox · el audio local ya se está grabando.');
+      await startLive(key, liveLangs, stream, runId);
+    } catch (e){
+      if (!isLiveRunActive(runId)) return;
+      const message = e.name === 'NotAllowedError'
+        ? 'Permiso denegado. Autorice la captura de audio para continuar.'
+        : (e.message || 'No fue posible iniciar la captura de audio.');
+      stopAll(message);
+    } finally {
+      $('btnStart').disabled = false;
+    }
+  }
+
+  function cleanupCapturedMedia(){
+    streams.forEach(s => s.getTracks().forEach(t => t.stop()));
+    streams = [];
+    if (audioCtx){ try{audioCtx.close();}catch{} audioCtx = null; }
+  }
+
+  function cleanupMedia(){
+    stopKeepAwake();
+    cleanupCapturedMedia();
+    clearInterval(timerIv);
+    timerIv = null;
+  }
+
+  async function recoverAudioClick(){
+    const runId = liveRunId;
+    if (!isLiveRunActive(runId) || !captureLost || !liveSourceSelection) return;
+    const button = $('btnRecoverAudio');
+    button.disabled = true;
+    hideErr();
+    captureTransition = true;
+    try {
+      await finishRecording();
+      cleanupCapturedMedia();
+      if (!isLiveRunActive(runId)) return;
+      captureLost = false;
+      captureTransition = false;
+      const generation = ++captureGeneration;
+      setStatus('solicitando audio…', 'busy');
+      showRecoveryNote('Seleccione nuevamente la fuente y active «Compartir audio».');
+      const { useSystem, useMic, useMyMic } = liveSourceSelection;
+      const stream = await getMixedStream(useSystem, useMic, useMyMic, generation);
+      if (!isLiveRunActive(runId) || captureLost || generation !== captureGeneration){
+        try { stream.getTracks().forEach(t => t.stop()); } catch {}
+        return;
+      }
+      liveStream = stream;
+      startRecording(stream, true);
+      reconnectAttempt = 0;
+      recoveryStartedAt = recoveryStartedAt || Date.now();
+      button.style.display = 'none';
+      showRecoveryNote('Audio recuperado · reconectando con Soniox; la sesión sigue siendo la misma.');
+      if (!liveSessionStartedAt) await startLive(liveApiKey, liveLangs, stream, runId);
+      else requestReconnect('La fuente de audio fue recuperada.');
+    } catch (e){
+      if (!isLiveRunActive(runId)) return;
+      captureTransition = false;
+      captureLost = true;
+      setStatus('sin audio', 'busy');
+      showRecoveryNote(
+        (e && e.name === 'NotAllowedError'
+          ? 'No se autorizó la nueva captura.'
+          : 'No fue posible recuperar el audio.') +
+        ' Pulse «Volver a compartir audio» para intentarlo otra vez.',
+        'capture-lost'
+      );
+      button.style.display = 'inline-block';
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  /* ════════════ GRABACIÓN LOCAL DE LA SESIÓN EN VIVO ════════════ */
+  // Graba el audio mezclado por bloques. Durante la sesión, los bloques se
+  // descargan de memoria hacia IndexedDB; al detener se vuelven a unir.
+  function startRecording(stream, append=false){
+    if (!append || recSessionId !== (currentSession && currentSession.id)){
+      recChunks = []; recBlob = null;
+      recSeq = 0;
+      recSessionId = currentSession && currentSession.id;
+      recWriteChain = Promise.resolve();
+    }
+    $('btnAudio').style.display = 'none';
+    try {
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+                 : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '');
+      recRecorder = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 48000 } : undefined);
+      recStopPromise = new Promise(resolve => { resolveRecStop = resolve; });
+      const mt = recRecorder.mimeType || mime || 'audio/webm';
+      const sessionId = recSessionId;
+      recRecorder.ondataavailable = e => {
+        if (!e.data || !e.data.size) return;
+        const seq = recSeq++;
+        const item = {
+          key: `${sessionId || 'temporal'}:${String(seq).padStart(8,'0')}`,
+          sessionId: sessionId || 'temporal',
+          seq,
+          blob: e.data
+        };
+        if (db && sessionId){
+          recWriteChain = recWriteChain
+            .then(() => audioChunkPut(item))
+            .catch(() => { recChunks.push(item); });
+        } else {
+          recChunks.push(item);
+        }
+      };
+      recRecorder.onstop = async () => {
+        try {
+          try { await recWriteChain; } catch {}
+          let stored = [];
+          try { if (sessionId) stored = await audioChunksFor(sessionId); } catch {}
+          const bySeq = new Map();
+          [...stored, ...recChunks].forEach(item => bySeq.set(item.seq, item.blob));
+          const parts = [...bySeq.entries()].sort((a,b)=>a[0]-b[0]).map(([,blob])=>blob);
+          if (parts.length){
+            recBlob = new Blob(parts, { type: mt });
+            setAudioSource(recBlob);   // habilita la escucha ▶ por intervención
+            render();
+            $('btnAudio').style.display = 'inline-block';
+          }
+          // En una recuperación se conservan los bloques para poder agregar el
+          // siguiente segmento. Solo se eliminan al cerrar toda la sesión.
+          if (stopping){
+            recChunks = [];
+            try { if (sessionId) await deleteAudioChunksFor(sessionId); } catch {}
+          }
+        } finally {
+          if (resolveRecStop) resolveRecStop();
+          resolveRecStop = null;
+        }
+      };
+      recRecorder.start(5000);
+    } catch {
+      if (resolveRecStop) resolveRecStop();
+      resolveRecStop = null;
+    }
+  }
+  function finishRecording(){
+    const done = recStopPromise;
+    try {
+      if (recRecorder && recRecorder.state !== 'inactive') recRecorder.stop();
+    } catch {
+      if (resolveRecStop) resolveRecStop();
+    }
+    recRecorder = null;
+    return done;
+  }
+  $('btnAudio').addEventListener('click', () => {
+    if (!recBlob) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(recBlob);
+    const ext = recBlob.type.includes('mp4') ? 'm4a' : 'webm';
+    a.download = (safeName(currentSession && currentSession.titulo) || 'audio-sesion') + '.' + ext;
+    a.click(); URL.revokeObjectURL(a.href);
+  });
+
+  /* ════════════ PAUSA (modo en vivo) ════════════ */
+  // Mantener la pestaña activa: Chrome congela pestañas en segundo plano
+  // (y eso mata la sesión), pero nunca congela una pestaña que reproduce audio.
+  // Se reproduce un tono grave a volumen imperceptible mientras hay sesión.
+  let awakeCtx = null, awakeOsc = null;
+  function startKeepAwake(){
+    try {
+      awakeCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const g = awakeCtx.createGain();
+      g.gain.value = 0.001;            // imperceptible
+      awakeOsc = awakeCtx.createOscillator();
+      awakeOsc.frequency.value = 30;   // tono muy grave
+      awakeOsc.connect(g); g.connect(awakeCtx.destination);
+      awakeOsc.start();
+      if (awakeCtx.state === 'suspended') awakeCtx.resume();
+    } catch {}
+  }
+  function stopKeepAwake(){
+    try { if (awakeOsc) awakeOsc.stop(); } catch {}
+    try { if (awakeCtx) awakeCtx.close(); } catch {}
+    awakeOsc = null; awakeCtx = null;
+  }
+
+  let paused = false;
+  function setPaused(p){
+    paused = p;
+    // Silencia las pistas de audio sin cerrar la sesión: no se transcribe nada
+    // mientras está en pausa y los hablantes conservan su numeración al reanudar
+    streams.forEach(s => s.getAudioTracks().forEach(t => t.enabled = !p));
+    $('btnPause').textContent = p ? 'Reanudar' : 'Pausar';
+    setStatus(p ? 'en pausa' : 'en vivo', p ? 'busy' : 'live');
+  }
+  $('btnPause').addEventListener('click', () => setPaused(!paused));
+
+  function stopAll(errMsg){
+    const stoppedMode = mode;
+    stopping = true;
+    liveRunId += 1;          // invalida cualquier inicio/reintento pendiente
+    captureGeneration += 1; // ignora eventos tardíos de pistas anteriores
+    captureTransition = true;
+    fileJobActive = false;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    reconnecting = false;
+    reconnectRequested = false;
+    reconnectAttempt = 0;
+    recoveryStartedAt = null;
+    const abortPending = activeConnectionAbort;
+    activeConnectionAbort = null;
+    try { if (abortPending) abortPending(); } catch {}
+    stopPeriodicSave();
+    saveSession(true); // asegura que lo transcrito quede en el historial
+    if (stoppedMode === 'live' && turns.length) downloadTxt(); // respaldo automático al finalizar en vivo
+    const client = soniox;
+    soniox = null;
+    if (client){ try{ client.stop(); }catch{} }
+    finishRecording();
+    cleanupMedia();
+    captureTransition = false;
+    liveStream = null;
+    liveApiKey = '';
+    liveLangs = [];
+    liveSessionStartedAt = 0;
+    liveHasConnected = false;
+    liveSourceSelection = null;
+    captureLost = false;
+    paused = false;
+    setLiveControls(false);
+    interimTurns = null;
+    render();
+    mode = 'history';
+    setStatus('detenido', '');
+    clearRecoveryNote();
+    if (errMsg){
+      showView('setup');
+      showErr(errMsg, true);
+    }
+    // Sin error, se mantiene la vista para renombrar hablantes, copiar o exportar.
+  }
+
+  $('err').addEventListener('click', () => hideErr());
+
+  /* ════════════ CLAVE DE API RECORDADA (solo en este navegador) ════════════ */
+  const KEY_STORE = 'sonioxKey';
+  try {
+    const saved = localStorage.getItem(KEY_STORE);
+    if (saved) $('apiKey').value = saved;
+  } catch {}
+  function persistKey(key){
+    try {
+      if ($('rememberKey').checked) localStorage.setItem(KEY_STORE, key);
+      else localStorage.removeItem(KEY_STORE);
+    } catch {}
+  }
+
+  // La caída de internet no termina la sesión: se conserva la captura y se
+  // reintenta en cuanto el navegador vuelve a estar en línea.
+  window.addEventListener('offline', () => {
+    if (mode !== 'live' || stopping) return;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    const client = soniox;
+    soniox = null;
+    try { if (client) client.cancel(); } catch {}
+    requestReconnect('Se perdió la conexión a internet.');
+  });
+  window.addEventListener('online', () => {
+    if (mode !== 'live' || stopping || soniox || reconnecting) return;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    attemptReconnect();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (mode !== 'live' || stopping) return;
+    saveSession(false);
+    if (document.visibilityState === 'visible'){
+      try { if (awakeCtx && awakeCtx.state === 'suspended') awakeCtx.resume(); } catch {}
+      try { if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); } catch {}
+      if (!soniox && !reconnectTimer && !reconnecting) requestReconnect('La sesión en vivo necesita reconectarse.');
+    }
+  });
+  window.addEventListener('pagehide', () => saveSession(false));
+  window.addEventListener('beforeunload', event => {
+    if (mode !== 'live' || stopping) return;
+    saveSession(false);
+    event.preventDefault();
+    event.returnValue = '';
+  });
+
+  $('btnStart').addEventListener('click', startLiveClick);
+  $('btnRecoverAudio').addEventListener('click', recoverAudioClick);
+  $('btnFile').addEventListener('click', transcribeFile);
+  $('btnStop').addEventListener('click', () => stopAll(null));
+  $('btnCopy').addEventListener('click', copyAll);
+  $('btnCopyAI').addEventListener('click', copyRecentAI);
+  $('btnSendAllChatGPT').addEventListener('click', sendAllToChatGPT);
+  $('btnSendAIChatGPT').addEventListener('click', sendRecentToChatGPT);
+  $('btnDownload').addEventListener('click', downloadTxt);
+  $('btnResetSpeakers').addEventListener('click', resetSpeakerLabels);
+  $('btnClear').addEventListener('click', () => {
+    currentSession = null;      // limpia la vista sin borrar lo ya guardado en el historial
+    refreshTitle();
+    resetTranscript();
+  });
+  $('btnNew').addEventListener('click', () => {
+    stopAll(null);
+    currentSession = null;
+    refreshTitle();
+    $('btnAttach').style.display = 'none';
+    showView('setup'); setStatus('inactivo',''); $('timer').textContent='';
+    renderHistory();
+  });
+
+  openDB().then(renderHistory).catch(() => renderHistory());
+</script>
+</body>
+</html>
