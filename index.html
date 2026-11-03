@@ -707,7 +707,7 @@
 
 <script>
   const API_BASE = 'https://api.soniox.com';
-  const APP_VERSION = '4.6.0-copiloto-tres-acciones';
+  const APP_VERSION = '4.6.1-captura-audio-segura';
   let intentContextSessionId = '';
   const $ = id => document.getElementById(id);
   const SP_COLORS = ['--sp1','--sp2','--sp3','--sp4','--sp5','--sp6'];
@@ -915,6 +915,7 @@
       try { if (this.context) await this.context.close(); } catch {}
       this.context = null;
       this.destination = null;
+      if (audioMixer && audioMixer !== this) return;
       ['meeting','input','myMic'].forEach(id => {
         const card=$('channel-'+id), meter=$('meter-'+id);
         if (card){ card.classList.remove('show','duplicate-warning'); }
@@ -1540,64 +1541,85 @@
     if (IS_PHONE) schedulePhoneMicRecovery();
   }
 
+  function cancelledAudioCapture(){
+    const error = new Error('La captura de audio cambió o se interrumpió. Vuelva a compartir la fuente para continuar.');
+    error.name = 'AbortError';
+    error.captureCancelled = true;
+    return error;
+  }
+
   async function getMixedStream(useSystem, useMic, useMyMic, generation=captureGeneration){
-    audioMixer = new AudioMixer(journal);
-    await audioMixer.init();
-    audioCtx = audioMixer.context;
-    if (useSystem){
-      const disp = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false },
-        systemAudio: 'include',
-        windowAudio: 'system',
-        selfBrowserSurface: 'exclude',
-        surfaceSwitching: 'include'
-      });
-      streams.push(disp);
-      // Importante: NO detener la pista de video. Al compartir pantalla completa
-      // (Windows), detenerla finaliza toda la captura, incluido el audio.
-      // El video no se envía a ningún lado; solo se mantiene activo.
-      const a = disp.getAudioTracks();
-      if (!a.length){
-        disp.getTracks().forEach(t=>t.stop());
-        throw new Error('No se recibió audio del sistema. Repita el proceso y marque la casilla «Compartir audio» en el diálogo de compartir pantalla/pestaña.');
+    // Los permisos son asíncronos: otra fuente puede terminar mientras el
+    // navegador espera una selección. Una captura antigua nunca debe usar
+    // el mezclador de una nueva ni recuperar una instancia ya cerrada.
+    const mixer = new AudioMixer(journal);
+    const acquired = [];
+    audioMixer = mixer;
+    const isCurrent = () => audioMixer === mixer && generation === captureGeneration &&
+      mode === 'live' && !stopping && !captureLost;
+    const checkCurrent = () => { if (!isCurrent()) throw cancelledAudioCapture(); };
+    const acceptStream = stream => {
+      acquired.push(stream);
+      checkCurrent();
+      streams.push(stream);
+      return stream;
+    };
+    const addSource = (stream,id,label,muted=false) => {
+      checkCurrent();
+      const track = stream.getAudioTracks().find(t => t.readyState === 'live');
+      if (!track) throw new Error(id === 'meeting'
+        ? 'No se recibió audio de la reunión. Seleccione la pestaña y active «Compartir audio».'
+        : 'La entrada de audio no está disponible. Revise el micrófono seleccionado y vuelva a iniciar.');
+      mixer.addChannel(id,label,track,muted);
+      track.addEventListener('ended', () => sourceEnded(label,generation));
+    };
+    try {
+      await mixer.init();
+      checkCurrent();
+      audioCtx = mixer.context;
+      if (useSystem){
+        const disp = acceptStream(await navigator.mediaDevices.getDisplayMedia({
+          video:true,
+          audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},
+          systemAudio:'include', windowAudio:'system',
+          selfBrowserSurface:'exclude', surfaceSwitching:'include'
+        }));
+        // Mantener la pista de video: detenerla puede finalizar también el audio.
+        addSource(disp,'meeting','Audio de reunión');
       }
-      audioMixer.addChannel('meeting','Audio de reunión',a[0],false);
-      a[0].addEventListener('ended', () => sourceEnded('el audio del sistema', generation));
+      if (useMic){
+        const devId = $('micDevice').value;
+        const constraints = {echoCancellation:false,noiseSuppression:false,autoGainControl:IS_PHONE};
+        if (devId && !IS_PHONE) constraints.deviceId = {exact:devId};
+        const mic = acceptStream(await navigator.mediaDevices.getUserMedia({audio:constraints}));
+        addSource(mic,'input',IS_PHONE ? 'Micrófono del celular' : 'Entrada / BlackHole');
+      }
+      if (useMyMic){
+        const devId = $('myMicDevice').value;
+        const constraints = {echoCancellation:true,noiseSuppression:true,autoGainControl:true};
+        if (devId) constraints.deviceId = {exact:devId};
+        const mic = acceptStream(await navigator.mediaDevices.getUserMedia({audio:constraints}));
+        myMicStream = mic;
+        myMicMuted = $('startMyMicMuted').checked;
+        addSource(mic,'myMic','Mi micrófono',myMicMuted);
+      }
+      checkCurrent();
+      const mixed = mixer.getStream();
+      if (!mixed || !mixed.getAudioTracks().some(t => t.readyState === 'live'))
+        throw new Error('No fue posible crear la mezcla de audio.');
+      journal.add('audio_mixer_ready',{channels:mixer.channels.size});
+      return mixed;
+    } catch (error){
+      const obsolete = !isCurrent();
+      // Solo liberar recursos de esta solicitud: una nueva captura puede existir.
+      acquired.forEach(stream => stream.getTracks().forEach(track => track.stop()));
+      streams = streams.filter(stream => !acquired.includes(stream));
+      if (acquired.includes(myMicStream)) myMicStream = null;
+      if (audioMixer === mixer){ audioMixer = null; audioCtx = null; }
+      await mixer.destroy();
+      if (obsolete) throw cancelledAudioCapture();
+      throw error;
     }
-    if (useMic){
-      const devId = $('micDevice').value;
-      // Sin cancelación de eco ni supresión de ruido: distorsionan señales de
-      // loopback (BlackHole) y degradan la transcripción
-      const constraints = {
-        echoCancellation: false,
-        noiseSuppression: false,
-        // En el celular, la ganancia automática ayuda a captar voces a distancia.
-        autoGainControl: IS_PHONE
-      };
-      if (devId && !IS_PHONE) constraints.deviceId = { exact: devId };
-      const mic = await navigator.mediaDevices.getUserMedia({ audio: constraints });
-      streams.push(mic);
-      audioMixer.addChannel('input',IS_PHONE ? 'Micrófono del celular' : 'Entrada / BlackHole',mic.getAudioTracks()[0],false);
-      mic.getAudioTracks()[0].addEventListener('ended', () => sourceEnded(IS_PHONE ? 'el micrófono del celular' : 'la entrada de audio seleccionada', generation));
-    }
-    if (useMyMic){
-      const devId = $('myMicDevice').value;
-      // Micrófono físico: cancelación de eco activa para no duplicar el audio
-      // de la reunión que sale por las bocinas
-      const c = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
-      if (devId) c.deviceId = { exact: devId };
-      const myMic = await navigator.mediaDevices.getUserMedia({ audio: c });
-      myMicStream = myMic;
-      myMicMuted = $('startMyMicMuted').checked;
-      streams.push(myMic);
-      audioMixer.addChannel('myMic','Mi micrófono',myMic.getAudioTracks()[0],myMicMuted);
-      myMic.getAudioTracks()[0].addEventListener('ended', () => sourceEnded('su micrófono', generation));
-    }
-    const mixed=audioMixer.getStream();
-    if (!mixed || !mixed.getAudioTracks().length) throw new Error('No fue posible crear la mezcla de audio.');
-    journal.add('audio_mixer_ready',{ channels:audioMixer.channels.size });
-    return mixed;
   }
 
   /* ════════════ MODO EN VIVO (Soniox tiempo real) ════════════ */
@@ -3241,7 +3263,7 @@ Después de aprobación:
       showRecoveryNote('Conectando con Soniox · el audio local ya se está grabando.');
       await startLive(key, liveLangs, stream, runId);
     } catch (e){
-      if (!isLiveRunActive(runId)) return;
+      if (!isLiveRunActive(runId) || (e && e.captureCancelled)) return;
       const message = e.name === 'NotAllowedError'
         ? 'Permiso denegado. Autorice la captura de audio para continuar.'
         : (e.message || 'No fue posible iniciar la captura de audio.');
@@ -3305,7 +3327,7 @@ Después de aprobación:
       if (!liveSessionStartedAt) await startLive(liveApiKey, liveLangs, stream, runId);
       else requestReconnect('La fuente de audio fue recuperada.');
     } catch (e){
-      if (!isLiveRunActive(runId)) return;
+      if (!isLiveRunActive(runId) || (e && e.captureCancelled)) return;
       captureTransition = false;
       captureLost = true;
       setStatus('sin audio', 'busy');
